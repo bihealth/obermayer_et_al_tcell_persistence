@@ -1,0 +1,1629 @@
+---
+title: "paper figures for Obermayer et al."
+output: 
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE, cache.lazy=FALSE, message=FALSE, warning=FALSE, dev=c('png','pdf'))
+library(Seurat)
+library(SeuratDisk)
+library(ggplot2)
+library(cowplot)
+library(ggrepel)
+library(dplyr)
+library(scRepertoire)
+library(tidyr)
+library(ggalluvial)
+library(plyr)
+library(DESeq2)
+library(ComplexHeatmap)
+library(dendextend)
+library(tmod)
+library(ggraph)
+library(ggforce)
+options(future.globals.maxSize = 10 * 1024 * 1024^2)
+```
+
+get data
+
+```{r get_data}
+pbmc.all <- readRDS(file.path('..','data','seurat','pbmc_all.rds'))
+
+tcr_combined <- readRDS(file.path('..','data','seurat','tcr_combined_all.rds'))
+
+pbmc.all$sample <- gsub('PBMC$','',pbmc.all$sample)
+pbmc.all$celltype <- ifelse(pbmc.all$predicted.celltype.l1 %in% c('B','CD4 T','CD8 T'),
+                            pbmc.all$predicted.celltype.l2,
+                            pbmc.all$predicted.celltype.l1)
+pbmc.all$stage <- factor(gsub('[DR][0-9]*([preostd0-9]*)','\\1',pbmc.all$sample),levels=c('pre','post','d90','d180'))
+stage_map <- c('pre'='pre G-CSF','post'='post G-CSF','d90'='day +90','d180'='day +180')
+pbmc.all$stage <- revalue(pbmc.all$stage, stage_map)
+pbmc.all$cloneType <- factor(tolower(gsub('single','small',gsub(' .*','',pbmc.all$cloneType))),
+                             levels=c('small','medium','large','hyperexpanded'))
+
+
+pairs <- list('26'=c('D26pre','D26post','R26d90','R26d180'),
+              '10'=c('D10pre','D10post','R10d180'),
+              '16'=c('D16pre','D16post','R16d90','R16d180'),
+              '29'=c('D29post','R29d90','R29d180'),
+              '36'=c('D36pre','D36post','R36d90'))
+
+md <- lapply(names(pairs), function(x) pbmc.all@meta.data %>% 
+               dplyr::filter(sample %in% pairs[[x]]))
+names(md) <- names(pairs)
+
+persisting_cts <- lapply(names(md), function(x) md[[x]] %>%
+                           dplyr::filter(!is.na(CTaa) & !grepl('^NA_|_NA$',CTaa)) %>%
+                           dplyr::group_by(CTaa) %>%
+                           dplyr::summarise(n=n(),
+                                            ns=n_distinct(sample),
+                                            nd=n_distinct(donor_type)) %>%
+                           dplyr::filter(nd==2) %>%
+                           dplyr::pull(CTaa))
+names(persisting_cts) <- names(md)
+n_persisting_cts <- length(Reduce(union,persisting_cts))
+```
+
+set color scheme
+
+```{r colors}
+celltype_colors <- c('B intermediate'='darkgoldenrod1',
+                     'B memory'='darkgoldenrod2',
+                     'B naive'='darkgoldenrod3',
+                     'B'='darkgoldenrod',
+                     'CD4 CTL'='seagreen1',
+                     'CD4 Naive'='darkolivegreen1',
+                     'CD4 Proliferating'='darkolivegreen2',
+                     'CD4 TCM'='darkolivegreen3',
+                     'CD4 TEM'='darkolivegreen4',
+                     'CD4 T'='darkolivegreen',
+                     'CD8 Naive'='lightblue1',
+                     'CD8 Proliferating'='lightblue2',
+                     'CD8 TCM'='lightblue3',
+                     'CD8 TEM'='lightblue4',
+                     'CD8 T'='lightblue',
+                     'DC'='lightpink',
+                     'Mono'='antiquewhite3',
+                     'NK'='plum3',
+                     'other'='gray30',
+                     'other T'='slateblue4',
+                     'Plasmablast'='tan3',
+                     'Treg'='seagreen4')
+
+stage_colors <- c('pre G-CSF'='orange1',
+                  'post G-CSF'='orange3',
+                  'day +90'='firebrick3',
+                  'day +180'='firebrick4')
+
+dtype_colors <- c('D'='orange2',
+                  'R'='firebrick')
+
+pair_shapes_1 <- c('p10'=16,'p16'=15,'p26'=18,'p29'=17,'p31'=12,'p36'=13)
+pair_shapes_2 <- c('p10'=21,'p16'=22,'p26'=23,'p29'=24,'p36'=25)
+
+pair_colors <- c("p10"="#E41A1C",
+                 "p16"="#377EB8",
+                 "p26"="#4DAF4A",
+                 "p29"="#984EA3",
+                 "p31"="#FF7F00",
+                 "p36"="#FFFF33")
+
+pair_map <- c('p10'='pair A','p16'='pair B','p26'='pair C','p29'='pair D','p31'='pair E','p36'='pair F')
+
+cloneType_colors <- c('hyperexpanded'='plum4',
+                      'large'='plum3',
+                      'medium'='plum2',
+                      'small'='plum1')
+
+persistence_colors <- c('persisting'='limegreen','other'='gray30')
+```
+
+# Figure 1 + S1
+
+show PBMC data in reference embedding; cluster assignment is combination of level 2 (for B and T) and level 1 (other)
+
+```{r Fig_1C, fig.width=6,fig.height=5}
+anno <- data.frame(x=c(-12,-12),
+                   xend=c(-9,-12),
+                   y=c(-15,-15),
+                   yend=c(-15,-12))
+anno_text <- data.frame(x=c(-10.5,-13),
+                        y=c(-16,-13.5),
+                        label=c('UMAP 1','UMAP 2'),
+                        angle=c(0,90))
+
+DimPlot(pbmc.all, group.by='celltype', split.by='stage', pt.size=.01, ncol=2) + 
+  guides(color=guide_legend(override.aes = list(size=2),ncol=1)) +
+  geom_segment(data=anno,
+               aes(x=x,y=y,xend=xend,yend=yend),
+               arrow=arrow(length=unit(1.5,'mm')),colour='black',size=.25,inherit.aes=FALSE) + 
+  geom_text(data=anno_text,
+            aes(x=x,y=y,label=label,angle=angle),size=1.5,inherit.aes=FALSE) + 
+  theme_void() + 
+  coord_fixed() +
+  labs(title='') +
+  scale_color_manual(values=celltype_colors,limits=force) +
+  theme(legend.key.size=unit(3,'mm'),
+        legend.position='right')
+```
+
+some QC stats
+
+```{r Fig_S1A, fig.width=5,fig.height=6.5}
+ncells <- table(pbmc.all$sample)
+ggplot(pbmc.all@meta.data %>% 
+         dplyr::select(sample, stage, donor, nCount_RNA, 
+                       nFeature_RNA,  pct.mito, predicted.celltype.l1.score) %>%
+         dplyr::mutate(pair=gsub('^[DR]','p',donor),
+                       sample=paste0(pair_map[pair],' ', stage, ' (n=',ncells[sample],')')) %>%
+         gather(metric,value,-c(sample,stage,pair,donor)),
+       aes(x=sample,y=value,fill=stage,color=pair)) + 
+  geom_violin(outlier.shape=NA) + 
+  geom_boxplot(color='black',outlier.shape=NA,width=.5) + 
+  facet_wrap(~metric,ncol=1,scales='free_y') + 
+  theme_classic() +
+  scale_fill_manual(values=stage_colors) +
+  scale_color_manual(values=pair_colors,labels=pair_map) +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=.5),
+        strip.background=element_blank(),
+        legend.key.height=unit(3,'mm')) +
+  labs(x='',y='',fill='',color='')
+```
+
+use ADT data for confirmation of cell types; maybe kick out some of the antibodies that are not lineage-defining?
+
+```{r Fig_S1B,fig.width=6,fig.height=3.5}
+DefaultAssay(pbmc.all) <- 'ADT'
+ABs <- c('CD3-TS', 'CD4-TS', 'CD8-TS', 'CD45RA-TS', 'CD19-TS', 'CD20-TS', 'IgD-TS','HLA-DR-TS','CD38-TS', 'CD27-TS')
+
+order <- c('B naive','B memory',
+           'CD4 Naive','CD4 TCM','CD4 TEM',
+           'CD8 Naive','CD8 TCM','CD8 TEM',
+           'DC','Mono','NK','other T', 
+           'Plasmablast','Treg')
+
+ADT <- FetchData(pbmc.all, c(ABs,'celltype')) %>%
+  dplyr::filter(celltype %in% order) %>%
+  dplyr::mutate_if(is.numeric,  scales::rescale, to=c(0,1)) %>%
+  dplyr::group_by(celltype) %>%
+  dplyr::summarise_if(is.numeric, median) %>%
+  dplyr::ungroup()
+
+colnames(ADT) <- gsub('-TS','',colnames(ADT))
+ADT$group <- paste0(ADT$celltype)
+ADT <- ADT %>% 
+  dplyr::mutate(celltype2=factor(celltype,levels=order)) %>%
+  dplyr::arrange(celltype2) %>%
+  dplyr::select(-celltype2)
+pheatmap(ADT %>%
+           dplyr::select(-c(celltype)) %>%
+           tibble::column_to_rownames('group') %>% t(),
+         color=colorRampPalette(c("white", "black"))(100),
+         annotation_col = data.frame(celltype=as.factor(ADT$celltype),
+                                     row.names=ADT$group),
+         annotation_colors = list(celltype=celltype_colors[ADT$celltype]),
+         annotation_legend=FALSE,
+         annotation_names_col=TRUE,
+         cluster_cols =FALSE,
+         cluster_rows=FALSE,
+         labels_col=ADT$celltype,
+         name='scaled\nmedian\nexpression')
+```
+
+show celltype proportions
+
+```{r Fig_S1C,fig.width=6,fig.height=3}
+pbmc.all@meta.data %>% 
+  dplyr::group_by(sample,donor,stage,celltype) %>% 
+  dplyr::summarise(n=n()) %>% 
+  dplyr::group_by(sample,donor,stage) %>%
+  dplyr::mutate(frac=n/sum(n),
+                pair=gsub('^[DR]','p',donor),
+                sample=paste0(pair_map[pair],' ', stage)) %>%
+  ggplot(aes(x=sample,y=frac,fill=celltype)) + 
+  geom_col() + 
+  scale_fill_manual(values=celltype_colors,limits=force) + 
+  coord_flip() +
+  theme_classic() +
+  theme(legend.key.size=unit(3,'mm')) +
+  labs(y='cell fraction',x='',fill='')
+```
+
+# Figure 2 + S2
+
+run PCA on celltype proportions: donors and recipients are clearly separated
+
+```{r Fig_2A,fig.width=4.,fig.height=2.5}
+library(ggfortify)
+
+cols <- c('sample','celltype')
+md_here <- pbmc.all@meta.data[,cols] %>%
+  dplyr::group_by(sample,celltype) %>%
+  dplyr::summarise(n=n()) %>%
+  dplyr::mutate(frac=n/sum(n),
+                type=gsub('([RD])([0-9]*)([prepostd]*[0-9]*)','\\1',sample),
+                pair=gsub('([RD])([0-9]*)([prepostd]*[0-9]*)','p\\2',sample),
+                stage=gsub('([RD])([0-9]*)([prepostd]*[0-9]*)','\\3',sample)) %>%
+  dplyr::mutate(stage=factor(revalue(stage,stage_map),levels=stage_map))
+
+df <- md_here %>%
+  ungroup() %>%
+  dplyr::select(sample,frac,celltype) %>%
+  spread(celltype,frac) %>%
+  tibble::column_to_rownames('sample')
+
+df[is.na(df)] <- 0
+
+pca <- prcomp(df, scale=TRUE)
+
+meta <- md_here %>%
+  dplyr::select(sample,type,pair,stage) %>%
+  dplyr::distinct(.keep_all=TRUE)
+
+autoplot(pca, data = meta, colour = 'stage', shape='pair', size=3) + 
+  theme_classic() + 
+  scale_color_manual(values=stage_colors) + 
+  scale_shape_manual(values=pair_shapes_1,
+                     breaks=names(pair_map),
+                     labels=pair_map) +
+  labs(shape='',color='') +
+  theme(legend.key.size=unit(4,'mm'))
+```
+
+compare composition between donors and recipients: there are strong differences in B, CD4 and CD8 cells
+
+```{r Fig_2B, fig.width=3.5,fig.height=2.5}
+library(lme4)
+library(gtools)
+
+md_here <- pbmc.all@meta.data
+md_here$cell_type <- md_here$celltype
+
+pv <- list()
+for (clust in setdiff(md_here$cell_type,'other')) {
+  mod <- glmer(md_here$cell_type==clust ~ md_here$donor_type + (1 | md_here$sample), family=binomial)
+  coef <- summary(mod)$coefficients
+  pv[[clust]] <- data.frame(pval=coef[2,4],
+                            cell_type=clust,
+                            group=c('D','R')) %>%
+    dplyr::mutate(p=stars.pval(pval))
+}
+
+md_here %>% 
+  dplyr::group_by(sample,cell_type) %>%
+  dplyr::filter(cell_type!='other') %>%
+  dplyr::summarise(n=n()) %>%
+  dplyr::mutate(frac=n/sum(n),
+                type=gsub('([RD])([0-9]*)([prepostd]*[0-9]*)','\\1',sample),
+                pair=gsub('([RD])([0-9]*)([prepostd]*[0-9]*)','p\\2',sample)) %>%
+  ggplot(aes(x=cell_type,y=frac,fill=type,color=type)) + 
+  geom_boxplot(position=position_dodge(width=.8),outlier.shape=NA) +
+  geom_point(size=.5,position=position_dodge(width=.8),color='gray30') +
+  geom_text(data=do.call(rbind,pv) %>%
+              dplyr::mutate(type=group) %>%
+              tidyr::complete(type,cell_type,fill=list(p='')),
+            aes(y=Inf,x=cell_type,label=p),
+            color='black',
+            inherit.aes=FALSE,
+            size=2,
+            hjust=.5,
+            vjust=.7) +
+  theme_classic() +
+  scale_y_log10() +
+  labs(x='',y='cell fraction',color='',fill='') + 
+  coord_cartesian(clip='off') +
+  scale_fill_manual(values=dtype_colors) +
+  scale_color_manual(values=dtype_colors) +
+  theme(axis.text.x=element_text(angle=60,hjust=1,vjust=1),
+        strip.background = element_rect(fill = NA, colour = NA),
+        legend.position=c(.7,-.8),
+        legend.direction='horizontal',
+        legend.key.size=unit(3,'mm'),
+        legend.title=element_blank())
+```
+
+cloneType in umap
+
+```{r Fig_S2A,fig.width=5.5,fig.height=5}
+DimPlot(pbmc.all, group.by='cloneType', split.by='stage', ncol=2) +
+  geom_segment(data=anno,
+               aes(x=x,y=y,xend=xend,yend=yend),
+               arrow=arrow(length=unit(1.5,'mm')),colour='black',size=.25,inherit.aes=FALSE) + 
+  geom_text(data=anno_text,
+            aes(x=x,y=y,label=label,angle=angle),size=1.5,inherit.aes=FALSE) + 
+  theme_void() +
+  coord_fixed() +
+  scale_color_manual(values=cloneType_colors,na.value='gray90', breaks=names(cloneType_colors)) +
+  theme(legend.key.size=unit(3,'mm')) +
+  labs(title='')
+```
+
+now look at gene expression for all cells of a celltype (as defined above; i.e., level 1 for Mono DC NK and other plus level 2 for T cells); and then separately for persisting and non-persisting *CD8 TEM cells*
+
+```{r get_pseudobulk_counts}
+DefaultAssay(pbmc.all) <- 'RNA'
+genes <- grep('^TR[AB][VDJ][0-9]|^IG[HLK][VDJ][0-9]',row.names(pbmc.all),value=TRUE,invert=TRUE)
+expr <- list()
+for (sample in unique(pbmc.all$sample)) {
+  for (celltype in setdiff(pbmc.all$celltype,'other')) {
+    cells <- Cells(pbmc.all)[(pbmc.all$sample==sample) & (pbmc.all$celltype==celltype)]
+    if (length(cells) > 1) {
+      expr[[paste0(sample,'_',celltype)]] <- rowSums(pbmc.all@assays$RNA@counts[genes,cells])
+    }
+  }      
+  
+  cells <- Cells(pbmc.all)[(pbmc.all$sample==sample)]
+  expr[[paste0(sample,'_all')]] <- rowSums(pbmc.all@assays$RNA@counts[genes,cells])
+
+  pair <- gsub('[DR]([0-9]*).*','\\1',sample)
+  if (pair %in% c('31','36')) next
+
+  cells <- Cells(pbmc.all)[(pbmc.all$sample==sample) & 
+                             (pbmc.all$CTaa %in% persisting_cts[[pair]]) & 
+                             (pbmc.all$celltype=='CD8 TEM')]
+  if (length(cells) > 1) {
+    expr[[paste0(sample,'_persisting')]] <- rowSums(pbmc.all@assays$RNA@counts[genes,cells])
+  }
+  cells <- Cells(pbmc.all)[(pbmc.all$sample==sample) & 
+                             !is.na(pbmc.all$CTaa) & 
+                             !grepl('^NA_|_NA$',pbmc.all$CTaa) &
+                             !(pbmc.all$CTaa %in% persisting_cts[[pair]]) & 
+                             (pbmc.all$celltype=='CD8 TEM')]
+  if (length(cells) > 1) {
+    expr[[paste0(sample,'_other')]] <- rowSums(pbmc.all@assays$RNA@counts[genes,cells])
+  }
+}
+
+colData <- data.frame(sample=factor(gsub('_.*','',names(expr))),
+                      stage=factor(gsub('[DR][0-9]*(.*)_.*','\\1',names(expr)),levels=c('pre','post','d90','d180')),
+                      pair=gsub('[DR]([0-9]*).*','\\1',names(expr)),
+                      donor_type=factor(gsub('([DR]).*','\\1',names(expr)),levels=c('D','R')),
+                      celltype=factor(gsub('.*_','',names(expr)),levels=c('other','persisting','all',
+                                                                          setdiff(unique(pbmc.all$celltype),'other'))),
+                      row.names=names(expr))
+
+counts <- do.call(cbind,expr)
+```
+
+now we run differential gene expression on the data, with a number of comparisons:
+
+- D_vs_R_*: donors vs. recipients in all cell types separately (excluding rare cell types that appear in less than 10 samples)
+- persisting_vs_other: persisting vs other CD8 TEM cells, separately for donors and recipients and excluding pair 31 and 36
+
+```{r pseudobulk_DE}
+res <- list()
+take_row <- rowSums(counts) > 0
+tmp <- table(colData$celltype)
+for (celltype in setdiff(names(tmp[tmp >= 10]),c('persisting','other'))) {
+  take_col <- (colSums(counts) > 0) & (colData$celltype==celltype)
+  try({
+    dds <- DESeqDataSetFromMatrix(countData=counts[take_row,take_col],
+                                  colData=colData[take_col,,drop=FALSE],
+                                  design=~pair+donor_type) %>%
+      DESeq()
+    res[[paste0('R_vs_D_',celltype)]] <- lfcShrink(dds,
+                                                   contrast=c('donor_type','R','D'),
+                                                   type='normal',
+                                                   format='DataFrame') %>%
+      as.data.frame() %>%
+      tibble::rownames_to_column('gene_name') %>%
+      dplyr::mutate(contrast=paste0('R_vs_D_',celltype))
+  })
+}
+
+take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('31','36')) & (colData$donor_type=='D')
+dds <- DESeqDataSetFromMatrix(countData=counts[take_row,take_col],
+                              colData=colData[take_col,,drop=FALSE],
+                              design=~pair+stage+celltype) %>%
+  DESeq()
+res[['persisting_vs_other_D']] <- lfcShrink(dds,
+                                           contrast = c('celltype','persisting','other'),
+                                           type='normal',
+                                           format="DataFrame") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column('gene_name') %>%
+  dplyr::mutate(contrast='persisting_vs_other_D')
+
+take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('31','36')) & (colData$donor_type=='R')
+dds <- DESeqDataSetFromMatrix(countData=counts[take_row,take_col],
+                              colData=colData[take_col,,drop=FALSE],
+                              design=~pair+stage+celltype) %>%
+  DESeq()
+res[['persisting_vs_other_R']] <- lfcShrink(dds,
+                                           contrast = c('celltype','persisting','other'),
+                                           type='normal',
+                                           format="DataFrame") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column('gene_name') %>%
+  dplyr::mutate(contrast='persisting_vs_other_R')
+
+
+pseudobulk <- do.call(rbind,res)
+write.csv(pseudobulk,file=file.path('..','data','DE','pseudobulk_DE.csv'))
+```
+
+load table of "DEGs" of differential genes (at adj. p-value < 0.01) 
+
+```{r pseudobulk_table, cache=FALSE}
+pseudobulk <- read.csv(file.path('..','data','DE','pseudobulk_DE.csv'),row.names=1)
+diff_genes <- pseudobulk %>% 
+  dplyr::filter(grepl('persisting_vs_other_[DR]|R_vs_D_CD8 TEM',contrast),padj < .01,abs(log2FoldChange) > .5) %>% 
+  dplyr::pull(gene_name) %>%
+  unique()
+persistence_genes <- pseudobulk %>% 
+  dplyr::filter(grepl('persisting_vs_other_[DR]',contrast) & (padj < .01) & (abs(log2FoldChange) > .5)) %>% 
+  dplyr::pull(gene_name) %>%
+  unique()
+```
+
+run gene set enrichment analysis using `tmod` on these results, using Hallmark, Reactome, Kegg and Gene Ontology BP categories
+
+```{r tmod}
+msig <- tmodImportMSigDB(file.path('..','msigdb_v7.2.xml'))
+sel <- (msig$MODULES$Category %in% c("H"))  | (msig$MODULES$Subcategory %in% c('CP:REACTOME','GO:BP','CP:KEGG'))
+sel <- sel & (msig$MODULES$B <= 100)
+log10pval <- pseudobulk %>%
+  dplyr::mutate(group=contrast) %>%
+  dplyr::mutate(log10pval=ifelse(!is.na(log2FoldChange) & !is.na(pvalue),
+                                 -sign(log2FoldChange)*log10(pvalue), NA)) %>%
+  dplyr::select(gene_name,group,log10pval) %>%
+  dplyr::filter(!is.na(log10pval)) %>%
+  spread(group,log10pval) %>%
+  tibble::column_to_rownames('gene_name') %>%
+  dplyr::slice(sample(1:n()))
+
+sorted_genes <- list()
+for (contrast in colnames(log10pval)) {
+  genes_up <- row.names(log10pval)[order(log10pval[[contrast]],decreasing=TRUE,na.last=NA)]
+  genes_up[log10pval[genes_up,contrast] <= 0] <- sample(genes_up[log10pval[genes_up,contrast] <= 0])
+  sorted_genes[[paste0(contrast,'_up')]] <- genes_up
+  genes_down <- row.names(log10pval)[order(log10pval[[contrast]],decreasing=FALSE,na.last=NA)]
+  genes_down[log10pval[genes_down,contrast] >= 0] <- sample(genes_down[log10pval[genes_down,contrast] >= 0])
+  sorted_genes[[paste0(contrast,'_down')]] <- genes_down
+}
+
+tmods <- do.call(rbind,lapply(sorted_genes,function(x) tmodCERNOtest(x,mset=msig[sel])))
+
+write.csv(tmods %>%
+            tibble::rownames_to_column('tmp') %>%
+            dplyr::mutate(dataset=gsub('\\..*','',tmp),
+                          contrast=gsub('([^_]*_[vs_]*[^_]*_.*)_([updown]*)$','\\1',dataset),
+                          direction=gsub('([^_]*_[vs_]*[^_]*_.*)_([updown]*)$','\\2',dataset)),
+          file=file.path('..','data','DE','pseudobulk_tmod.csv'))
+```
+
+here's a table "GSEA" of the `tmod` results to excel file
+
+```{r tmod_table}
+msig <- tmodImportMSigDB(file.path('..','msigdb_v7.2.xml'))
+tmods <- read.csv(file.path('..','data','DE','pseudobulk_tmod.csv'),row.names=1,stringsAsFactors=FALSE)
+```
+
+here's a summary plot of differential genes in the "R_vs_D" comparisons belonging to any of the handpicked terms, but excluding ribosomal proteins
+
+```{r Fig_S2B,  fig.width=8.5, fig.height=3.}
+ids <- c('M15834','M15834','M23223','M25551','M18615','M13519','M895','M18810',
+         'M16118','M16750','M29203','M510','M189')
+
+genes <- pseudobulk %>%
+  dplyr::filter(grepl('R_vs_D',contrast),!grepl('all',contrast)) %>%
+  dplyr::filter(!(is.na(padj)) & (padj < .01)) %>%
+  dplyr::filter(gene_name %in% grep('RP[LS]',Reduce(union,msig[ids]$MODULES2GENES),value=TRUE,invert=TRUE)) %>%
+  dplyr::group_by(contrast) %>%
+  dplyr::slice_min(padj, n=25) %>%
+  dplyr::pull(gene_name) %>%
+  unique()
+
+df <- pseudobulk %>%
+  dplyr::filter(grepl('R_vs_D',contrast),!grepl('all',contrast)) %>%
+  dplyr::filter(gene_name %in% genes) %>%
+  dplyr::mutate(group=contrast)  %>%
+  dplyr::select(group,gene_name,log2FoldChange) %>%
+  spread(group,log2FoldChange) %>%
+  tibble::column_to_rownames('gene_name')
+
+df[is.na(df)] <- 0
+hc <- hclust(dist(df))
+gene.order <- row.names(df)[order.hclust(hc)]
+
+ggplot(pseudobulk %>%
+         dplyr::filter(grepl('R_vs_D',contrast),!grepl('all',contrast)) %>%
+         dplyr::filter(gene_name %in% genes) %>%
+         dplyr::mutate(gene_name=factor(gene_name,levels=gene.order),
+                       contrast=gsub('R_vs_D_','',contrast)),
+       aes(x=gene_name,y=contrast,size=-log10(padj),color=log2FoldChange)) +
+  geom_point() +
+  scale_size_continuous(name='adj. p-value',
+                        breaks=c(3,6,9),
+                        labels=c(1e-3,1e-6,1e-9),
+                        limits=c(0,15)) +
+  scale_color_gradient2(low='blue3',mid='gray',high='red3',
+                        limits=c(-3,3),oob=scales::squish) +
+  coord_cartesian(clip = 'off') +
+  theme_minimal(base_size=10) +
+  #coord_flip() +
+  guides(color=guide_colorbar(barheight=.5,direction='horizontal',title.position='top')) +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=.5),
+        legend.box='vertical',
+        legend.title=element_text(hjust=.5,size=10),
+        legend.key.height=unit(3,'mm'),
+        legend.position='right') +
+  labs(x='',y='',color='log2 fold change\nrecipient vs donor')
+```
+
+here a summary plot of gene set enrichment for these terms
+
+```{r Fig_2C,fig.width=9,fig.height=3.25}
+levels <- tmods %>%
+  dplyr::filter(grepl('R_vs_D',contrast),!grepl('all',contrast)) %>%
+  dplyr::select(ID,Title) %>%
+  dplyr::filter(ID %in% ids) %>%
+  dplyr::distinct(ID,.keep_all=TRUE) %>%
+  dplyr::mutate(Title=toupper(gsub('_',' ',Title))) %>%
+  tibble::column_to_rownames('ID')  
+         
+df <- tmods %>%
+  dplyr::filter(ID %in% ids) %>%
+  dplyr::filter(grepl('R_vs_D',contrast),!grepl('all',contrast)) %>%
+  dplyr::mutate(log10P=ifelse(direction=='up',-log10(adj.P.Val),log10(adj.P.Val))) %>%
+  dplyr::group_by(ID,contrast) %>%
+  dplyr::slice_max(abs(log10P),n=1) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(Title,log10P,contrast) %>%
+  spread(contrast,log10P) %>%
+  tibble::column_to_rownames('Title')
+
+df[is.na(df)] <- 0
+hc <- hclust(dist(df))
+title.order <- row.names(df)[order.hclust(hc)]
+
+hc <- hclust(dist(t(df)))
+contrast.order <- gsub('R_vs_D_','',colnames(df)[order.hclust(hc)])
+
+tmods %>%
+  dplyr::filter(ID %in% ids) %>%
+  dplyr::filter(grepl('R_vs_D',contrast),!grepl('all',contrast)) %>%
+  dplyr::mutate(log10P=ifelse(direction=='up',-log10(adj.P.Val),log10(adj.P.Val))) %>%
+  dplyr::group_by(ID,contrast) %>%
+  dplyr::slice_max(abs(log10P),n=1) %>%
+  dplyr::mutate(Title=factor(toupper(Title),levels=toupper(title.order)),
+                contrast=gsub('R_vs_D_','',contrast)) %>%
+  ggplot(aes(y=Title,x=contrast,color=log10P,size=AUC)) + 
+  geom_point() +
+  scale_color_gradient2('low'='darkorchid3',mid='gray80',high='forestgreen',
+                        breaks=c(-10,0,10),
+                        limits=c(-10,10),
+                        labels=c('1.e-10 (down)','n.s.','1.e-10 (up)'),
+                        oob=scales::squish) +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=60,hjust=1,vjust=1),
+        legend.key.size=unit(3,'mm')) +
+  labs(x='',y='',color='adj. p-value')
+```
+
+```{r get_scdiffcom}
+library(scDiffCom)
+scdiffcom <- readRDS(file.path('..','data','scDiffCom','scdiffcom_object.rds'))
+CCI <- GetTableCCI(scdiffcom, "detected", simplified=TRUE) 
+ORA <- GetTableORA(scdiffcom, categories = "all", simplified = TRUE)
+```
+
+plot top enriched ligand-receptor interactions that are up-regulated between donors and recipients
+
+```{r Fig_2D,fig.width=5.5,fig.height=3.5}
+PlotORA(scdiffcom,category='LRI') +
+  theme_classic() +
+  coord_cartesian(clip='off') +
+  theme(legend.key.size=unit(3,'mm'),
+        legend.spacing=unit(0,'mm'),
+        legend.title=element_text(size=10),
+        legend.box='vertical',
+        legend.position='right') +
+  labs(title='')
+```
+
+show these ligand-receptor interactions in a celltype-celltype network
+
+```{r Fig_2E,fig.width=3.5,fig.height=3}
+library(igraph)
+library(RColorBrewer)
+
+top_LRI <- ORA$LRI %>%
+  dplyr::filter(VALUE %in% c('CD72:CD5',
+                             #'S100A8:ITGB2',
+                             #'S100A9:ITGB2',
+                             'MIF:CD74',
+                             'SIRPG:CD47'))
+
+node_df <- pbmc.all@meta.data %>%
+  dplyr::group_by(celltype) %>%
+  dplyr::summarise(ncells=n()) %>%
+  dplyr::mutate(label=celltype) %>%
+  dplyr::filter(!grepl('other',celltype)) %>%
+  dplyr::select(celltype,ncells,label)
+
+edge_df <- CCI %>% 
+  dplyr::filter(LRI %in% top_LRI$VALUE,!grepl('other',ER_CELLTYPES),BH_P_VALUE_DE < .01) %>%
+  dplyr::mutate(emitter=gsub('_.*','',ER_CELLTYPES),
+                receiver=gsub('.*_','',ER_CELLTYPES)) %>%
+  dplyr::select(emitter,receiver,LRI,REGULATION) %>%
+  dplyr::left_join(top_LRI %>%
+                     dplyr::mutate(ORA_SCORE=pmax(ORA_SCORE_UP,ORA_SCORE_DOWN)) %>%
+                     dplyr::select(VALUE,ORA_SCORE),
+                   by=c('LRI'='VALUE')) %>%
+  dplyr::mutate(ORA_SCORE=ifelse(is.infinite(ORA_SCORE),max(ORA_SCORE[is.finite(ORA_SCORE)]),ORA_SCORE))
+
+score <- edge_df %>% 
+  dplyr::distinct(ORA_SCORE,LRI) %>%
+  dplyr::pull(ORA_SCORE,LRI)
+
+igraph_layouts <- c('star', 'circle', 'gem', 'dh', 'graphopt', 'grid', 'mds', 
+                    'randomly', 'fr', 'kk', 'drl', 'lgl')
+
+ggraph(graph_from_data_frame(edge_df,
+                             directed=TRUE,
+                             vertices=node_df %>% 
+                               dplyr::filter(celltype %in% c(edge_df$emitter,edge_df$receiver))),
+       layout='circle') +
+  geom_edge_fan(aes(color=LRI), strength=.5,alpha=.75,edge_width=1) +
+  geom_node_point(aes(),size=3,pch=21,fill='gray',show=FALSE) +
+  geom_node_text(aes(label = label),size=3,check_overlap=TRUE,repel=TRUE) + 
+  scale_color_manual(values=celltype_colors) +
+  scale_edge_color_brewer(palette='Set2') +
+  #scale_edge_linetype_manual(values=c('UP'='solid','DOWN'='dotted')) +
+  theme_void() +
+  guides(edge_color=guide_legend(override.aes=list(edge_width=2),ncol=1),
+         edge_alpha=guide_legend(override.aes=list(edge_width=2),ncol=1)) +
+  theme(legend.key.size=unit(3.5,'mm')) +
+  coord_fixed() +
+  labs(edge_color='',edge_linetype='',edge_alpha='')
+```
+
+# Figure 3 + S3
+
+look at clonal diversity (Inv. Simpson score) for CD4/CD8 T cells
+
+```{r Fig_3A,fig.width=2.5,fig.height=2.5}
+CD4_CD8 <- row.names(pbmc.all@meta.data)[pbmc.all@meta.data$predicted.celltype.l1 %in% c("CD4 T", "CD8 T")]
+tcr_comb <- lapply(tcr_combined, function(x) x[x$barcode %in% CD4_CD8,])
+df <- clonalDiversity(tcr_comb,cloneCall='gene',group='samples',exportTable=TRUE) %>%
+  dplyr::mutate(donor=gsub('[preostd]*[0-9]*PBMC','',samples),
+                donor_type=ifelse(grepl('^D',samples),'donor','recipient'),
+                pair=gsub('[DR]([0-9]*).*','p\\1',samples),
+                stage=factor(revalue(gsub('[DR][0-9]*([prepostd]*[0-9]*)PBMC','\\1',samples),stage_map),
+                             levels=stage_map)) 
+
+ggplot(df, aes(x=stage,y=`Inv.Simpson`,fill=stage)) + 
+  geom_boxplot(outlier.shape=NA,width=.5) + 
+  geom_point(aes(shape=pair,group=stage),size=2,color='black') + 
+  geom_line(aes(group=pair),color='gray50',size=.25) +
+  theme_classic() +
+  scale_fill_manual(values=stage_colors,guide='none') +
+  scale_shape_manual(values=pair_shapes_1,
+                     labels=pair_map) +
+  scale_y_log10() +
+  annotate(geom='segment',x=1.5,xend=3.5,y=2800,yend=2800,size=.25) +
+  annotate(geom='segment',x=1.,xend=2,y=2500,yend=2500,size=.25) +
+  annotate(geom='segment',x=3.,xend=4,y=2500,yend=2500,size=.25) +
+  annotate(geom='segment',x=1.5,xend=1.5,y=2500,yend=2800,size=.25) +
+  annotate(geom='segment',x=3.5,xend=3.5,y=2500,yend=2800,size=.25) +
+  annotate(geom='text',x=2.5,y=3200,hjust=.5,vjust=0,size=2.5,
+           label=paste0('p=',signif(wilcox.test(`Inv.Simpson` ~ donor_type,data=df)$p.value,2))) +
+  theme(legend.key.size=unit(3.,'mm'),
+        legend.position='right',
+        legend.title=element_blank(),
+        axis.text.x=element_text(angle=45,hjust=1,vjust=1)) +
+  labs(x='',shape='')
+```
+
+plot clonotype expansion for all clonotypes at more than 1% abundance or the persisting clonotypes
+
+```{r Fig_3B, fig.width=7,fig.height=2.5}
+col.par = function(n) sample(seq(0.3, 1, length.out=n_persisting_cts),n)
+
+ct_colors <- hcl(h=seq(15, 375, length = n_persisting_cts+1),l = 65, c = 100)[sample(1:n_persisting_cts,n_persisting_cts)]
+names(ct_colors) <- Reduce(union, persisting_cts)
+
+cts_here <- do.call(rbind,md) %>%
+  dplyr::mutate(pair=gsub('^[DR]','',donor)) %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),!is.na(CTaa),!grepl('NA',CTaa)) %>%
+  dplyr::group_by(pair,stage) %>%
+  dplyr::mutate(ntot=n()) %>%
+  dplyr::group_by(pair,stage,CTaa) %>%
+  dplyr::summarise(n=n(),ntot=mean(ntot)) %>%
+  dplyr::mutate(frac=n/ntot) %>%
+  dplyr::filter(frac >= .01) %>% 
+  dplyr::pull(CTaa)
+
+tmp <- rep('gray80',length(setdiff(cts_here,names(ct_colors))))
+names(tmp) <- setdiff(cts_here,names(ct_colors))
+ct_colors_here <- c(ct_colors,tmp)
+
+do.call(rbind,md) %>%
+  dplyr::mutate(pair=gsub('^[DR]','',donor)) %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T')) %>%
+  dplyr::group_by(pair,stage) %>%
+  dplyr::mutate(ntot=n()) %>%
+  dplyr::filter(CTaa %in% c(cts_here,Reduce(union,persisting_cts))) %>%
+  dplyr::mutate(CTaa=factor(CTaa,levels=rev(names(ct_colors_here)))) %>%
+  dplyr::group_by(pair,stage,CTaa) %>%
+  dplyr::summarise(n=n(),ntot=mean(ntot)) %>%
+  dplyr::mutate(frac=n/ntot,
+                stage=factor(stage,levels=stage_map)) %>%
+  rowwise() %>%
+  dplyr::mutate(pair=paste0(pair_map[[paste0('p',pair)]], 
+                            '\n(',length(persisting_cts[[pair]]),' persisting)')) %>% 
+  ggplot(aes(x = stage, fill = CTaa, group = CTaa,
+             stratum = CTaa, alluvium = CTaa,
+             y = frac, label = CTaa)) +
+  theme_classic() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        legend.position='none',
+        legend.text=element_text(size=6),
+        strip.background = element_rect(color = "black", fill=NA, size = 0),
+        legend.key.size=unit(3,'mm')) +
+  #coord_cartesian(ylim=c(0,.7)) +
+  geom_stratum(size=.1) +
+  geom_flow(stat = "alluvium") +
+  scale_x_discrete(breaks=stage_map,labels=stage_map) +
+  scale_fill_manual(values=ct_colors_here) +
+  labs(y='fraction CD4/CD8 T cells',fill='') + 
+  facet_wrap(~pair,ncol=5) +
+  coord_cartesian(clip='off')
+```
+
+plot phenotype distribution: persisting cells are mostly CD8 TEM (leave out p31)
+
+```{r Fig_3C,fig.width=3.95,fig.height=3.}
+do.call(rbind,md) %>%
+  dplyr::mutate(pair=gsub('^[DR]','p',donor)) %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),
+                pair!='p31') %>%
+  dplyr::group_by(pair,stage) %>%
+  dplyr::mutate(ntot=n()) %>%
+  dplyr::mutate(persistence=factor(ifelse(CTaa %in% Reduce(union,persisting_cts),'persisting','other'),
+                                    levels=c('persisting','other'))) %>%
+  dplyr::group_by(pair,stage,celltype,persistence) %>%
+  dplyr::summarise(n=n()) %>%
+  dplyr::group_by(pair,stage,persistence) %>%
+  dplyr::mutate(frac=n/sum(n)) %>%
+  ggplot(aes(x=stage,y=frac,fill=celltype)) + 
+  geom_jitter(aes(shape=pair),width=.1) + 
+  stat_summary(aes(y = frac,color=celltype,group=celltype), fun.y=mean, geom="line", na.rm=TRUE, size=1) +
+  scale_color_manual(values=celltype_colors,na.value='gray90',limits=force) +
+  scale_fill_manual(values=celltype_colors,na.value='gray90',limits=force) +
+  scale_shape_manual(values=pair_shapes_2,labels=pair_map) +
+  facet_wrap(~persistence,ncol=2) +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        legend.key.size=unit(3.,'mm'),
+        legend.box='horizontal',
+        legend.position='bottom',
+        legend.box.margin=unit(c(-5,-5,0,-5),'mm'),
+        legend.spacing=unit(0,'mm'),
+        strip.background = element_rect(color = "black", fill=NA, size = 0)) +
+  guides(fill=guide_legend(override.aes=list(pch=22,stroke=0,size=3),ncol=2),
+         color=guide_legend(override.aes=list(pch=22,stroke=0,size=3),ncol=2),
+         shape=guide_legend(ncol=1)) +
+  labs(y='fraction cells',x='',fill='',color='',shape='')
+```
+
+plot change in frequency for top10 clonotypes in donors or recipients
+
+```{r Fig_3D_S3D, fig.width=7,fig.height=2.5}
+top10 <- do.call(rbind,md) %>%
+  dplyr::mutate(pair=gsub('^[DR]','',donor)) %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),!is.na(CTaa),!grepl('NA',CTaa)) %>%
+  dplyr::group_by(pair,donor_type,stage) %>%
+  dplyr::mutate(ntot=n()) %>%
+  dplyr::group_by(pair,donor_type,stage,CTaa) %>%
+  dplyr::summarise(n=n(),ntot=mean(ntot)) %>%
+  dplyr::mutate(frac=n/ntot) %>%
+  dplyr::group_by(CTaa,donor_type,pair) %>%
+  dplyr::slice_max(frac,n=1) %>%
+  dplyr::group_by(donor_type,pair) %>%
+  dplyr::slice_max(frac,n=10) %>%
+  dplyr::pull(CTaa,donor_type)
+
+tmp <- rep('gray50',length(setdiff(top10,names(ct_colors))))
+names(tmp) <- setdiff(top10,names(ct_colors))
+ct_colors_here <- c(ct_colors,tmp)
+
+for (dt in c('donor','recipient')) {
+  pl <- do.call(rbind,md) %>%
+    dplyr::mutate(pair=gsub('^[DR]','',donor)) %>%
+    dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T')) %>%
+    dplyr::group_by(pair,stage) %>%
+    dplyr::mutate(ntot=n()) %>%
+    dplyr::filter(CTaa %in% top10) %>%
+    dplyr::mutate(CTaa=factor(CTaa,levels=rev(names(ct_colors_here)))) %>%
+    dplyr::group_by(pair,stage,CTaa) %>%
+    dplyr::summarise(n=n(),ntot=mean(ntot)) %>%
+    dplyr::mutate(frac=n/ntot,
+                  stage=factor(stage,levels=stage_map)) %>%
+    dplyr::group_by(pair,stage) %>%
+    dplyr::mutate(r=rank(frac)) %>%
+    dplyr::mutate(pair=pair_map[paste0('p',pair)]) %>%
+    dplyr::full_join(data.frame(CTaa=top10,donor_type=paste0('top clones ',names(top10),'s')),by='CTaa') %>%
+    dplyr::filter(grepl(dt,donor_type)) %>%
+    ggplot(aes(x = stage, color = CTaa,
+               y = frac, label = CTaa)) +
+    theme_classic() +
+    theme(axis.title.x = element_blank(),
+          axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+          title=element_text(size=10),
+          legend.position='none',
+          legend.text=element_text(size=6),
+          strip.background = element_rect(color = "black", fill=NA, size = 0),
+          legend.key.size=unit(3,'mm')) +
+    geom_line(aes(group=CTaa),size=.15) +
+    geom_point(size=1) + #aes(shape=n >= 5)) +
+    scale_y_log10() +
+    scale_x_discrete(breaks=stage_map,labels=stage_map) +
+    scale_color_manual(values=ct_colors_here) +
+    #scale_shape_manual(values=c(4,16)) +
+    labs(y=paste0('fraction CD4/CD8 T cells'),fill='',title=paste0('top10 ',dt,' clones')) +
+    facet_grid(.~pair) +
+    coord_cartesian(clip='off')
+  print(pl)
+}
+```
+  
+clonal overlap (morisita) for CD4 + CD8 T cells
+
+```{r Fig_S3A, fig.width=4.5,fig.height=4.5}
+breaks <- c('D10prePBMC','D10postPBMC','R10d180PBMC',
+            'D16prePBMC','D16postPBMC','R16d90PBMC','R16d180PBMC',
+            'D26prePBMC','D26postPBMC','R26d90PBMC','R26d180PBMC',
+            'D29postPBMC','R29d90PBMC','R29d180PBMC',
+            'D31postPBMC','R31d90PBMC','R31d180PBMC',
+            'D36prePBMC','D36postPBMC','R36d90PBMC')
+labels <- gsub('[DR]10','A_',
+               gsub('[DR]16','B_',
+                    gsub('[DR]26','C_',
+                         gsub('[DR]29','D_',
+                              gsub('[DR]31','E_',
+                                   gsub('[DR]36','F_',gsub('PBMC','',breaks)))))))
+
+df <- as.matrix(clonalOverlap(tcr_comb[breaks], cloneCall = "gene+nt", method = "morisita", exportTable=TRUE) %>%
+                  dplyr::select(-names))
+df[is.na(df)] <- 0
+df <- df + t(df)
+df <- df[breaks,breaks]
+df[lower.tri(df,diag=TRUE)] <- NA
+as.data.frame(df) %>% 
+  tibble::rownames_to_column('names') %>%
+  gather(name,value,-names) %>% 
+  ggplot(aes(x=factor(names,levels=breaks),y=factor(name,level=breaks),fill=value)) + 
+  geom_tile() +
+  geom_text(aes(label=round(value,2)),size=2) +
+  scale_x_discrete(breaks=breaks,labels=labels) + 
+  scale_y_discrete(breaks=breaks,labels=labels) + 
+  scale_fill_gradient(low='gray90',high='skyblue4',na.value = 'white') +
+  theme_classic(base_size=8) + 
+  #coord_fixed() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=.5),
+        legend.position=c(.9,.3)) +
+  labs(x='',y='',fill='morisita')
+```
+
+check phenotype switching
+
+```{r Fig_S3B,fig.width=6.25,fig.height=2}
+library(forcats)
+pl <- do.call(rbind,md) %>%
+  dplyr::mutate(pair=gsub('^[DR]','p',donor)) %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),CTaa %in% Reduce(union,persisting_cts),pair!='p31') %>%
+  dplyr::group_by(CTaa,celltype) %>%
+  dplyr::summarise(n=n()) %>%
+  dplyr::group_by(CTaa) %>%
+  dplyr::mutate(n_celltype=n_distinct(celltype),
+                n_cells=sum(n)) %>%
+  dplyr::slice_max(n,n=1,with_ties=FALSE) %>%
+  dplyr::mutate(n_major=n,n_tot=n_cells) %>%
+  dplyr::mutate(major=round(n_major/n_tot,2)) %>%
+  dplyr::filter(major > 0) %>%
+  droplevels() %>%
+  dplyr::group_by(celltype) %>%
+  dplyr::mutate(CTaa=reorder(CTaa, major)) %>%
+  dplyr::arrange(CTaa) %>%
+  dplyr::mutate(right=cumsum(n_tot),
+                left=right - n_tot) %>%
+  ggplot() + 
+  geom_rect(aes(xmin = left, xmax = right, ymin=0, ymax = 100*major, fill = CTaa)) +
+  scale_fill_manual(values=ct_colors) +
+  scale_x_continuous(expand=expansion(add=c(10,10))) +
+  facet_grid(~celltype,space='free_x',scales='free_x') +
+  theme_classic() +
+  theme(legend.key.size=unit(3.5,'mm'),
+        legend.box='vertical',
+        legend.position='none',
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        strip.background=element_blank(),
+        strip.text=element_text(angle=90,hjust=0,vjust=.5,size=8)) +
+  labs(y='% cells with\nmajority\nphenotype',x='cells in persisting clonotypes',fill='')
+
+pg <- ggplotGrob(pl)
+for(i in which(grepl("strip-t", pg$layout$name))){
+  pg$grobs[[i]]$layout$clip <- "off"
+}
+
+grid::grid.draw(pg)
+```
+
+get VDJdb matches for all clonotypes and plot the fraction of cells with known clonotype specificity
+
+```{r Fig_S3C,fig.width=4.,fig.height=2.}
+samples <- c('D26pre','D26post','R26d90','R26d180',
+             'D10pre','D10post','R10d180',
+             'D16pre','D16post','R16d90','R16d180',
+             'D29post','R29d90','R29d180',
+             'D31post','R31d90','R31d180',
+             'D36pre','D36post','R36d90')
+
+vdjdb_match <- list()
+for (sample in samples) {
+  vdjdb_match[[sample]] <- list(TRA=read.csv(file.path('..','data','VDJdb','TRA',paste0(sample,'PBMC_TRA.txt')),
+                                             header=1,sep='\t') %>%
+                                  dplyr::distinct(cdr3aa,.keep_all=TRUE) %>%
+                                  dplyr::pull(antigen.species,cdr3aa),
+                                TRB=read.csv(file.path('..','data','VDJdb','TRB',paste0(sample,'PBMC_TRB.txt')),
+                                             header=1,sep='\t') %>%
+                                  dplyr::distinct(cdr3aa,.keep_all=TRUE) %>%
+                                  dplyr::pull(antigen.species,cdr3aa))
+}
+
+annotated_md <- pbmc.all@meta.data %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),sample %in% samples) %>%
+  dplyr::mutate(tra=gsub('_.*','',CTaa),
+                trb=gsub('.*_','',CTaa)) %>%
+  rowwise() %>%
+  dplyr::mutate(anno=paste0(c(if (tra %in% names(vdjdb_match[[sample]][['TRA']])) vdjdb_match[[sample]][['TRA']][tra] else "",
+                              if (trb %in% names(vdjdb_match[[sample]][['TRB']])) vdjdb_match[[sample]][['TRB']][trb] else ""),collapse=','))
+
+annotated_md %>%
+  dplyr::ungroup() %>%
+  dplyr::select(donor,stage,CTaa,anno) %>%
+  dplyr::mutate(pair=gsub('^[DR]','p',donor),
+                persistence=ifelse(CTaa %in% Reduce(union,persisting_cts),'persisting','other')) %>%
+  dplyr::group_by(pair,stage) %>%
+  dplyr::summarise(anno=sum(grepl('CMV|EBV',anno)),
+                   ntot=n()) %>% #mean(ntot)) %>%
+  ggplot(aes(x=stage,y=anno/ntot)) +
+  geom_point(aes(shape=pair)) + 
+  stat_summary(aes(y = anno/ntot,group=pair), fun=mean, 
+               geom="line", na.rm=TRUE, size=.25, color='gray50') +
+  scale_shape_manual(values=pair_shapes_1,
+                     labels=pair_map,
+                     limits=force) +
+  theme_classic() +
+  theme(legend.key.size=unit(3.5,'mm'),
+        legend.box='vertical',
+        legend.title=element_blank(),
+        legend.box.margin=unit(c(0,0,-10,0),'mm'),
+        axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        axis.title.y=element_text(size=10)) +
+  labs(y='fraction cells\nwith known\nCMV/EBV\nspecificity',x='',fill='',color='',shape='')
+```
+
+# Figure 4 + S4
+
+run a PCA on the CD8 TEM cell data using all genes that are different between donors and recipients or between persisting and other
+
+```{r Fig_4A,fig.width=4,fig.height=3.}
+take_row <- rowSums(counts) > 0
+take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('31','36'))
+dds <- DESeqDataSetFromMatrix(countData=counts[take_row,take_col],
+                              colData=colData[take_col,,drop=FALSE],
+                              design=~pair+stage+celltype)
+dds <- DESeq(dds)
+rld <- rlog(dds,blind=TRUE)
+
+pca <- prcomp(scale(t(assay(rld)[diff_genes,])))
+percentVar <- round(100*(pca$sdev^2)/sum(pca$sdev^2))
+meta <- colData(rld) %>% 
+  as.data.frame() %>%
+  dplyr::mutate(pair=paste0('p',pair),
+                stage=revalue(stage,stage_map))
+
+ggplot(cbind(pca$x,meta) %>%
+         dplyr::arrange(celltype,pair,stage), 
+       aes(x=PC1, y=PC2, color=celltype,
+           shape=pair,fill=stage)) +
+  geom_point(size=3, stroke=1) +
+  scale_shape_manual(values=pair_shapes_2,
+                     labels=pair_map,
+                     limits=force) + 
+  scale_fill_manual(values=stage_colors) +
+  scale_colour_manual(values=persistence_colors) +
+  labs(x=paste0("PC1: ", percentVar[1], "% variance"),
+       y=paste0("PC2: ", percentVar[2], "% variance"),
+       color='',fill='',shape='') + 
+  theme_classic() +
+  theme(legend.key.size=unit(3.5,'mm'),
+        legend.spacing=unit(0,'mm'),
+        legend.title=element_blank()) +
+  guides(fill=guide_legend(override.aes=list(pch=21,stroke=1,size=3)),
+         color=guide_legend(override.aes=list(pch=21,stroke=1,size=3)),
+         shape=guide_legend(override.aes=list(fill='black',size=3))) 
+```
+
+here's a heatmap for CD8 TEM cells, using all genes that are different between persisting and other or between donor and recipient CD8 TEM cells (adj. p-value < .01, abs(log2FoldChange) > .5)
+
+```{r Fig_4B,fig.width=6,fig.height=6}
+sample_anno <- colData(rld)[,c('sample','stage','donor_type','celltype','pair')]
+names(sample_anno) <- c('sample','stage','donor_type','persistence','pair')
+sample_anno$pair <- pair_map[paste0('p',sample_anno$pair)]
+sample_anno$stage <- factor(stage_map[as.character(sample_anno$stage)],levels=stage_map)
+
+gene_anno <- pseudobulk %>% 
+  dplyr::filter(grepl('persisting|CD8 TEM',contrast)) %>%
+  dplyr::mutate(val=ifelse(!is.na(padj) & (padj < .01), -log10(padj), 0),
+                contrast=gsub('_vs_other|_CD8 TEM','',contrast)) %>%
+  dplyr::select(gene_name,contrast,val) %>% 
+  spread(contrast,val) %>%
+  tibble::column_to_rownames('gene_name') 
+
+mat <- t(scale(t(assay(rld[diff_genes,]))))
+mat[is.na(mat)] <- 0
+
+inds <- which(diff_genes %in% persistence_genes)
+gene_va <- rowAnnotation(foo = anno_mark(at = inds, labels = diff_genes[inds],
+                                         labels_gp=gpar(fontsize=5),
+                                         link_gp=gpar(lwd=.5),
+                                         link_width=unit(.5,'cm')))
+
+pair_colors_2 <- pair_colors
+names(pair_colors_2) <- pair_map[names(pair_colors)]
+ha <- HeatmapAnnotation(df=sample_anno[,c('stage','pair','persistence')],
+                        show_annotation_name=FALSE,
+                        annotation_legend_param=list(title_gp=gpar(fontface='plain',fontsize=8),
+                                                     labels_gp=gpar(fontsize=8)),
+                        show_legend=TRUE,
+                        simple_anno_size=unit(2,'mm'),
+                        col=list(stage=stage_colors,
+                                 persistence=persistence_colors,
+                                 pair=pair_colors_2))
+
+dend <- as.dendrogram(hclust(dist(mat[diff_genes,])))
+nclust <- 6
+clust <- cutree(dend, k = nclust)
+
+Heatmap(mat[diff_genes,],
+        cluster_columns=TRUE,
+        cluster_rows=TRUE,
+        show_row_names=FALSE,
+        show_column_names=FALSE,
+        show_row_dend=TRUE,
+        top_annotation=ha,
+        row_split=clust,
+        heatmap_legend_param=list(title_gp=gpar(fontface='plain',fontsize=8),
+                                                     labels_gp=gpar(fontsize=8)),
+        row_title_gp=gpar(fontsize=10),
+        column_names_gp=gpar(fontsize=10),
+        name='z-score') + gene_va
+```
+
+show timecourse for all differential genes between persisting and other separately (adj. p-value < .01, abs log2 fold change > .5)
+
+```{r Fig_S4,fig.width=10,fig.height=7}
+mat[persistence_genes,] %>% 
+  as.data.frame() %>%
+  tibble::rownames_to_column('gene') %>% 
+  gather(sample,expression,-gene) %>%
+  dplyr::mutate(persisting=gsub('.*_(.*)','\\1',sample),
+                stage=factor(gsub('[DR][0-9]*([^_]*)_.*','\\1',sample),
+                             levels=c('pre','post','d90','d180')),
+                pair=gsub('[DR]([0-9]*).*','p\\1',sample),
+                stage=revalue(stage,stage_map),
+                gene=paste0(gene,': c',clust[gene])) %>%
+  dplyr::mutate(gene=factor(gene,levels=sort(unique(gene)))) %>%
+  ggplot(aes(x=stage,y=expression)) + 
+  geom_point(aes(shape=pair,fill=persisting),stroke=0,size=2) + 
+  stat_summary(aes(y = expression,color=persisting,group=persisting), 
+               fun.y=mean, geom="line", na.rm=TRUE, size=1) +
+  facet_wrap(~gene,ncol=9) + 
+  scale_color_manual(values=persistence_colors) +
+  scale_fill_manual(values=persistence_colors) +
+  scale_shape_manual(values=pair_shapes_2,
+                     labels=pair_map,
+                     limits=force) +
+  theme_classic() +
+  theme(strip.background=element_blank(),
+        legend.key.size=unit(3,'mm'),
+        legend.spacing=unit(1,'mm'),
+        axis.text.x=element_text(angle=45,hjust=1,vjust=1)) +
+  labs(x='',y='mean z-score',shape='',fill='',color='') +
+  guides(fill=guide_legend(override.aes=list(pch='',stroke=1,size=1)),
+         color=guide_legend(override.aes=list(pch='',stroke=1,size=1)),
+         shape=guide_legend(override.aes=list(fill='black',size=3,stroke=0))) 
+```
+
+again for selected genes
+
+```{r Fig_4C,fig.width=6,fig.height=5}
+persistence_genes_2 <- pseudobulk %>% 
+  dplyr::filter(grepl('persisting_vs_other_[DR]',contrast),padj < .01,log2FoldChange > .5) %>% 
+  dplyr::pull(gene_name)
+
+mat[persistence_genes_2,] %>% 
+  as.data.frame() %>%
+  tibble::rownames_to_column('gene') %>% 
+  gather(sample,expression,-gene) %>%
+  dplyr::mutate(persisting=gsub('.*_(.*)','\\1',sample),
+                stage=factor(gsub('[DR][0-9]*([^_]*)_.*','\\1',sample),
+                             levels=c('pre','post','d90','d180')),
+                pair=gsub('[DR]([0-9]*).*','p\\1',sample),
+                stage=revalue(stage,stage_map)) %>%
+  ggplot(aes(x=stage,y=expression)) + 
+  geom_point(aes(shape=pair,fill=persisting),stroke=0,size=2) + 
+  stat_summary(aes(y = expression,color=persisting,group=persisting), 
+               fun.y=mean, geom="line", na.rm=TRUE, size=1) +
+  facet_wrap(~gene,ncol=5) + 
+  scale_color_manual(values=persistence_colors) +
+  scale_fill_manual(values=persistence_colors) +
+  scale_shape_manual(values=pair_shapes_2,
+                     labels=pair_map,
+                     limits=force) +
+  theme_classic() +
+  theme(strip.background=element_blank(),
+        legend.key.size=unit(3,'mm'),
+        legend.title=element_blank(),
+        legend.spacing=unit(1,'mm'),
+        legend.position=c(.92,.06),
+        legend.margin=ggplot2::margin(c(10,20,10,15)),
+        #legend.position='right',
+        axis.text.x=element_text(angle=90,hjust=1,vjust=.5)) +
+  labs(x='',y='mean z-score',shape='',fill='',color='') +
+  guides(fill=guide_legend(override.aes=list(pch='',stroke=1,size=1)),
+         color=guide_legend(override.aes=list(pch='',stroke=1,size=1)),
+         shape=guide_legend(override.aes=list(fill='black',size=3,stroke=0))) 
+```
+
+take all CD8 cells in donors, recluster and run monocle3 for pseudotime
+
+```{r CD8_pseudotime}
+CD8 <- readRDS(file.path('..','data','seurat','CD8_pseudotime.rds'))
+CD8$persistence <- ifelse(CD8$CTaa %in% Reduce(union,persisting_cts),'persisting','other')
+```
+
+compare effectorness score (pseudotime) between CD8 populations
+
+```{r Fig_4D_right,fig.width=2,fig.height=2.5}
+ttest <- CD8@meta.data %>% dplyr::filter(celltype=='CD8 TEM') %>% t.test(monocle_pseudotime ~ persistence, data=.)
+rbind(CD8@meta.data %>%
+        dplyr::mutate(group='CD8 cells',
+                      celltype=factor(celltype,levels=c('CD8 Naive','CD8 TCM','CD8 Proliferating','CD8 TEM'))),
+      CD8@meta.data %>%
+        dplyr::filter(celltype=='CD8 TEM') %>%
+        dplyr::mutate(group='TEM',
+                      celltype=persistence)) %>%
+  #dplyr::filter(donor %in% c('D10','D16','D26','D29')) %>%
+  ggplot(aes(x=celltype,y=monocle_pseudotime,fill=celltype,color=celltype)) + 
+  geom_boxplot(outlier.shape=NA) +
+  geom_text(data=data.frame(x=1.5,y=28,
+                            group=factor('TEM',levels=c('CD8 cells','TEM')),
+                            label=stars.pval(ttest$p.value)),
+            aes(x=x,y=y,label=label),inherit.aes=FALSE,size=3) +
+  facet_grid(.~group,scales='free',space='free') +
+  theme_classic() + 
+  scale_fill_manual(values=c(celltype_colors,persistence_colors),guide=FALSE) +
+  scale_color_manual(values=c(celltype_colors,persistence_colors),guide=FALSE) +
+  theme(strip.background=element_blank(),
+        legend.key.size=unit(3,'mm'),
+        legend.title=element_blank(),
+        axis.text.x=element_text(angle=60,hjust=1,vjust=1)) +
+  labs(x='',y='effectorness score',color='',fill='',shape='')
+```
+
+compare cytotoxicity score between CD8 populations (https://www.nature.com/articles/s41590-020-0762-x#Sec11)
+
+```{r Fig_4D_left,fig.width=3.,fig.height=2.5}
+cytotoxicity_genes <- c('PRF1','IFNG','GNLY','NKG7','GZMB','GZMA','GZMH','KLRK1','KLRB1','KLRD1','CTSW','CST7')
+
+tcells <- subset(pbmc.all, subset=(celltype %in% c('CD4 Naive','NK','CD4 TCM','CD8 TCM','CD8 Naive',
+                                                  'CD8 TEM','CD4 TEM','other T','Treg','CD8 Proliferating',
+                                                  'CD4 Proliferating','CD4 CTL')) & !(pair %in% c('p31','p36')))
+tcells$persistence <- ifelse(tcells$CTaa %in% Reduce(union,persisting_cts),'persisting','other')
+DefaultAssay(tcells) <- 'SCT'
+tmp <- AddModuleScore(tcells, list('cytotoxicity'=cytotoxicity_genes))
+tcells$cytotoxicity <- tmp@meta.data$Cluster1
+
+ttest <- tcells@meta.data %>% dplyr::filter(celltype=='CD8 TEM') %>% t.test(cytotoxicity ~ persistence, data=.)
+celltype_order <- tcells@meta.data %>% 
+  dplyr::filter(celltype!='persisting',celltype!='other') %>%
+  dplyr::group_by(celltype) %>%
+  dplyr::summarise(cytotoxicity=mean(cytotoxicity)) %>%
+  dplyr::arrange(cytotoxicity) %>% 
+  dplyr::pull(celltype) %>%
+  c(.,'other','persisting')
+rbind(tcells@meta.data %>%
+        dplyr::mutate(group='T+NK cells',
+                      celltype=factor(celltype,celltype_order)),
+      tcells@meta.data %>%
+        dplyr::filter(celltype=='CD8 TEM') %>%
+        dplyr::mutate(group='CD8\nTEM',
+                      celltype=factor(persistence,celltype_order))) %>%
+  dplyr::mutate(group=factor(group,levels=c('T+NK cells','CD8\nTEM'))) %>%
+  ggplot(aes(x=celltype,y=cytotoxicity,fill=celltype,color=celltype)) + 
+  geom_boxplot(outlier.shape=NA) +
+  geom_text(data=data.frame(x=1.5,y=1.7,
+                            group=factor('CD8\nTEM',levels=c('T+NK cells','CD8\nTEM')),
+                            label=stars.pval(ttest$p.value)),
+            aes(x=x,y=y,label=label),inherit.aes=FALSE,size=3) +
+  facet_grid(.~group,scales='free',space='free') +
+  theme_classic() + 
+  scale_fill_manual(values=c(celltype_colors,persistence_colors),guide=FALSE) +
+  scale_color_manual(values=c(celltype_colors,persistence_colors),guide=FALSE) +
+  theme(strip.background=element_blank(),
+        legend.key.size=unit(3,'mm'),
+        legend.title=element_blank(),
+        axis.text.x=element_text(angle=60,hjust=1,vjust=1)) +
+  labs(x='',y='cytotoxicity score',color='',fill='',shape='')
+```
+
+# Figure 5 + S5
+
+```{r Fig_S5A,fig.width=5,fig.height=2.}
+pbmc.all$pair=gsub('([RD])([0-9]*)([prepostd]*[0-9]*)','p\\2',pbmc.all$sample)
+CD8TEM <- subset(pbmc.all, subset=(predicted.celltype.l2=='CD8 TEM') & !(pbmc.all$pair %in% c('p31','p36')))
+CD8TEM$persistence <- ifelse(CD8TEM$CTaa %in% Reduce(union,persisting_cts),'persisting','other')
+DefaultAssay(CD8TEM) <- 'SCT'
+CD8TEM <- ScaleData(CD8TEM, verbose=FALSE)
+
+emb <- t(CD8TEM@assays$SCT@scale.data[diff_genes,]) %*% as.matrix(pca$rotation[diff_genes,c(1,2)])
+colnames(emb) <- c('rot_1','rot_2')
+CD8TEM[["rot"]] <- CreateDimReducObject(embeddings = emb, key = "rot_", assay = DefaultAssay(CD8TEM))
+
+tmp <- FetchData(CD8TEM,c('rot_1','rot_2','stage','persistence','pair','donor_type'))
+
+anno <- data.frame(x=c(-18,-18),
+                   xend=c(-15,-18),
+                   y=c(-14,-14),
+                   yend=c(-14,-11))
+anno_text <- data.frame(x=c(-16.5,-19),
+                        y=c(-15,-12.5),
+                        label=c('PC 1','PC 2'),
+                        angle=c(0,90))
+
+ggplot(tmp,aes(x=rot_1,y=rot_2)) +
+  geom_point(data=tmp[,c('rot_1','rot_2')],color='gray80',size=.2,alpha=.25) +
+  geom_point(aes(fill=stage),stroke=0,pch=21,size=.8,alpha=.25) +
+  geom_density2d(aes(color=persistence)) +
+  geom_segment(data=cbind(anno,data.frame(donor_type='donor')),
+               aes(x=x,y=y,xend=xend,yend=yend),
+               arrow=arrow(length=unit(1.5,'mm')),colour='black',size=.25,inherit.aes=FALSE) +
+  geom_text(data=cbind(anno_text,data.frame(donor_type='donor')),
+            aes(x=x,y=y,label=label,angle=angle),size=2,inherit.aes=FALSE) +
+  facet_wrap(~donor_type,ncol=2) +
+  scale_color_manual(values=persistence_colors) +
+  scale_fill_manual(values=stage_colors) +
+  guides(fill=guide_legend(override.aes=list(size=3,alpha=1),order=1)) +
+  theme_void() +
+  coord_cartesian(clip='off') +
+  theme(legend.key.size=unit(3,'mm'),
+        legend.title=element_blank(),
+        legend.position=c(.45,.2),
+        legend.box='horizontal',
+        panel.spacing=unit(0,'mm'))
+```
+
+check how well persisting cells can be enriched within all CD8 T cells based on the expression of the persistence genes or other scores
+
+```{r prep_ML}
+library(randomForest)
+library(caret)
+
+CD4CD8 <- subset(pbmc.all, subset=(predicted.celltype.l1 %in% c('CD4 T','CD8 T')) & (donor_type=='donor') & (donor %in% c('D10','D16','D26','D29')))
+CD4CD8$persistence <- ifelse(CD4CD8$CTaa %in% Reduce(union,persisting_cts),'persisting','other')
+
+CD8TEM_markers <- read.csv(file.path('..','data','seurat','level2_markers_RNA.csv'),row.names=1) %>% 
+  dplyr::filter(cluster=='CD8 TEM') %>%
+  dplyr::slice_max(avg_log2FC,n=50) %>%
+  dplyr::pull(gene)
+
+data <- list('persistence'=as.data.frame(t(CD4CD8@assays$SCT@data[persistence_genes,])),
+             'ADT'=as.data.frame(t(CD4CD8@assays$ADT@data[ABs,])),
+             'cytotoxity'=as.data.frame(t(CD4CD8@assays$SCT@data[cytotoxicity_genes,])),
+             'CD8TEM'=as.data.frame(t(CD4CD8@assays$SCT@data[CD8TEM_markers,])))
+
+colnames(data[['ADT']]) <- gsub('-TS','',colnames(data[['ADT']]))
+
+for (x in names(data)) {
+  colnames(data[[x]]) <- make.names(colnames(data[[x]]))
+}
+donors <- CD4CD8$donor
+persistence <- as.factor(CD4CD8$persistence)
+```
+
+```{r ML_regression}
+lrs <- list()
+res1 <- list()
+res2 <- list()
+for (x in names(data)) {
+  for (donor in unique(donors)) {
+    label <- paste0(x,'_',donor,'_lr')
+    take <- donors!=donor
+    lrs[[label]] <- glm(persistence~.,
+                        data=cbind(data[[x]][take,],persistence=persistence[take]),
+                        family=binomial(link='logit'))
+    pred <- ifelse(predict(lrs[[label]],data[[x]][!take,],type='response') > .5,'persisting','other')
+    res1[[label]] <- data.frame('enriched'=mean(persistence[!take][pred=='persisting']=='persisting'),
+                                'base'=mean(persistence[!take]=='persisting'),
+                                'filter'=mean(pred=='persisting'),
+                                'featureset'=x,
+                                'type'='LogisticRegression',
+                                'donor'=donor)
+  }
+  for (cv in seq(1,10)) {
+    label <- paste0(x,'_',cv,'_lr')
+    take <- runif(length(donors)) < .75
+    lr <- glm(persistence~.,
+                        data=cbind(data[[x]][take,],persistence=persistence[take]),
+                        family=binomial(link='logit'))
+    pred <- ifelse(predict(lr,data[[x]][!take,],type='response') > .5,'persisting','other')
+    res2[[label]] <- data.frame('enriched'=mean(persistence[!take][pred=='persisting']=='persisting'),
+                                'base'=mean(persistence[!take]=='persisting'),
+                                'filter'=mean(pred=='persisting'),
+                                'featureset'=x,
+                                'type'='LogisticRegression',
+                                'cv'=cv)
+  }
+}
+```
+
+```{r ML_random_forest}
+rfs <- list()
+for (x in names(data)) {
+  for (donor in unique(donors)) {
+    label <- paste0(x,'_',donor,'_rf')
+    take <- donors!=donor
+    rfs[[label]] <- randomForest(x=data[[x]][take,],
+                                 y=persistence[take],
+                                 xtest=data[[x]][!take,],
+                                 ytest=persistence[!take],
+                                 importance=TRUE)
+    pred <- rfs[[label]]$test$predicted
+    res1[[label]] <- data.frame('enriched'=mean(persistence[!take][pred=='persisting']=='persisting'),
+                               'base'=mean(persistence[!take]=='persisting'),
+                               'filter'=mean(pred=='persisting'),
+                               'featureset'=x,
+                               'type'='RandomForest',
+                               'donor'=donor)
+  }
+  for (cv in seq(1,10)) {
+    label <- paste0(x,'_',cv,'_rf')
+    take <- runif(length(donors)) < .75
+    rf<- randomForest(x=data[[x]][take,],
+                      y=persistence[take],
+                      xtest=data[[x]][!take,],
+                      ytest=persistence[!take],
+                      importance=TRUE)
+    pred <- rf$test$predicted
+    res2[[label]] <- data.frame('enriched'=mean(persistence[!take][pred=='persisting']=='persisting'),
+                               'base'=mean(persistence[!take]=='persisting'),
+                               'filter'=mean(pred=='persisting'),
+                               'featureset'=x,
+                               'type'='RandomForest',
+                               'cv'=cv)
+  }
+}
+```
+
+show enrichment of persisting cells using different feature sets and classifiers
+
+```{r Fig_5A,fig.height=2.5,fig.width=2.5}
+df1 <- as.data.frame(do.call(rbind,res1))
+df2 <- as.data.frame(do.call(rbind,res2))
+
+featuresets <- c('ADT','cytotoxity','CD8TEM','persistence')
+donors.here <- c('D10','D16','D26','D29')
+
+ggplot(df2,aes(x=factor(featureset,levels=featuresets),y=enriched/base,fill=type)) + 
+  geom_boxplot(data=df2,outlier.shape=NA,width=.6,position=position_dodge(width=.8)) +
+  theme_classic() + 
+  scale_fill_brewer(palette='Paired') +
+  scale_shape_manual(values=pair_shapes_2,limits=force) +
+  labs(x='feature set',y='fold enrichment\nof persisting cells',fill='classifier',color='donor',shape='donor') +
+  theme(strip.background=element_blank(),
+        legend.key.size=unit(3,'mm'),
+        axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        legend.position=c(.65,.21))
+```
+
+```{r Fig_5B,fig.height=2.5,fig.width=2.25}
+ggplot(df1 %>% 
+         gather(stage,freq,c(base,enriched)) %>%
+         dplyr::mutate(donor=gsub('D','p',donor)) %>%
+         dplyr::filter(type=='RandomForest',featureset %in% c("persistence")),
+       aes(x=stage,y=freq,shape=donor,color=donor)) + 
+  geom_point(size=2) + 
+  geom_line(aes(group=donor),size=.25) +
+  theme_classic() +
+  guides(color=guide_legend(ncol=1),
+         shape=guide_legend(ncol=1)) +
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        legend.key.size=unit(3,'mm')) +
+  scale_shape_manual(values=pair_shapes_1,limits=force,labels=pair_map) +
+  scale_color_manual(values=pair_colors,limits=force,labels=pair_map) +
+  labs(x='',y='fraction\npersisting cells',color='',shape='')
+```
+
+show feature importance 
+
+```{r Fig_5C,fig.height=2.75,fig.width=2.5}
+library(forcats)
+coef <- list()
+for (x in featuresets) {
+  features <- colnames(data[[x]])
+  LR <- data.frame(lapply(donors.here, function(donor) lrs[[paste0(x,'_',donor,'_lr')]]$coefficients[features]))
+  RF <- data.frame(lapply(donors.here, function(donor) rfs[[paste0(x,'_',donor,'_rf')]]$importance[features,'MeanDecreaseGini']))
+  coef[[x]] <- data.frame(mean_LR=apply(LR,1,mean),
+                          se_LR=apply(LR,1,sd)/sqrt(length(donors.here)),
+                          mean_RF=apply(RF,1,mean),
+                          se_RF=apply(RF,1,sd)/sqrt(length(donors.here)),
+                          features=features,
+                          featureset=x)
+}
+
+ggplot(do.call(rbind,coef) %>%
+         dplyr::filter(featureset=='persistence') %>%
+         dplyr::slice_max(mean_RF, n=20),
+       aes(x=fct_reorder(features, mean_RF), y=mean_RF,ymin=mean_RF-se_RF,ymax=mean_RF+se_RF,label=features)) + 
+  geom_col(aes(fill=mean_RF)) + 
+  geom_errorbar(size=.25,width=0) +
+  scale_y_log10() +
+  theme_classic() +
+  coord_flip() +
+  scale_fill_gradient(low='gray80',high='forestgreen',trans='log',guide=FALSE) +
+  #theme(axis.text.axis.text.x=element_text(angle=90,hjust=1,vjust=.5,size=6)) +
+  labs(y='feature importance',x='')
+```
+
+```{r Fig_5F,fig.width=4.5,fig.height=3.5}
+pair <- '16'
+md16 <- pbmc.all@meta.data %>% 
+  dplyr::filter(sample %in% pairs[['16']])
+
+pair16_cts <- md16 %>% dplyr::mutate(CTaa=gsub('.*_','',CTaa)) %>% dplyr::pull(CTaa)
+bulk_TCR <- read.csv(file.path('..','data','bulk_TCR','DE07NGSUKBD128950_ct.tsv.gz'),header=1,sep='\t') %>%
+  dplyr::mutate(CTaa=cdr3,
+                frac=frequency,
+                stage='in-vitro sorted') %>%
+  dplyr::group_by(CTaa,stage) %>%
+  dplyr::summarise(frac=sum(frac))
+sc_beta <- union(gsub('.*_','',persisting_cts[[pair]]),intersect(pair16_cts,bulk_TCR$CTaa))
+
+ct_colors_old <- ct_colors
+names(ct_colors_old) <- gsub('.*_','',names(ct_colors_old))
+known <- sc_beta %in% names(ct_colors_old)
+ncts_missing <- sum(!known)
+ct_colors_16 <- c(ct_colors_old[names(ct_colors_old) %in% sc_beta],
+                    hcl(h=seq(15, 375, length = ncts_missing+1),
+                        l = 15, c = 80)[sample(1:ncts_missing,ncts_missing)])
+names(ct_colors_16) <- sc_beta
+
+good_beta <- md16 %>%
+  dplyr::mutate(pair=gsub('^[DR]','',donor)) %>%
+  dplyr::filter(predicted.celltype.l1=='CD8 T',!is.na(CTaa),!grepl('NA',CTaa)) %>%
+  dplyr::group_by(pair,stage) %>%
+  dplyr::mutate(ntot=n(),
+                CTaa=gsub('.*_','',CTaa)) %>%
+  dplyr::group_by(pair,stage,CTaa) %>%
+  dplyr::summarise(n=n(),ntot=mean(ntot)) %>%
+  dplyr::mutate(frac=n/ntot) %>%
+  dplyr::filter(frac >= .01) %>% 
+  dplyr::pull(CTaa) %>%
+  union(.,bulk_TCR$CTaa[bulk_TCR$frac >= .01])
+
+tmp <- rep('gray80',length(setdiff(good_beta,names(ct_colors_16))))
+names(tmp) <- setdiff(good_beta,names(ct_colors_16))
+ct_colors_16 <- c(ct_colors_16,tmp)
+
+train <- (donors!=paste0('D',pair)) #& (CD4CD8$predicted.celltype.l1=='CD8 T')
+test <- (donors==paste0('D',pair)) & (CD4CD8$stage=='post G-CSF') #& (CD4CD8$predicted.celltype.l1=='CD8 T')
+rf <- randomForest(x=data[['persistence']][train,],
+                   y=persistence[train],
+                   xtest=data[['persistence']][test,],
+                   ytest=persistence[test],
+                   importance=TRUE)
+pred <- rf$test$predicted
+
+tmp_all <- md16 %>%
+  dplyr::mutate(pair=gsub('^[DR]','',donor)) %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD8 T','CD4 T'), !is.na(CTaa),!grepl('NA',CTaa)) %>%
+  dplyr::group_by(pair,stage) %>%
+  dplyr::mutate(ntot=n(),
+                CTaa=gsub('.*_','',CTaa)) %>%
+  dplyr::group_by(pair,stage,CTaa) %>%
+  dplyr::summarise(n=n(),ntot=mean(ntot)) %>%
+  dplyr::mutate(frac=n/ntot) %>%
+  dplyr::ungroup()  %>%
+  dplyr::select(CTaa,stage,frac) 
+tmp_bulk <- bulk_TCR %>%
+  dplyr::ungroup()
+tmp_pred <- md16[names(pred)[pred=='persisting'],] %>%
+  dplyr::filter(!is.na(CTaa),!grepl('NA',CTaa)) %>%
+  dplyr::mutate(pair=gsub('^[DR]','',donor)) %>%
+  dplyr::group_by(pair,stage) %>%
+  dplyr::mutate(ntot=n(),
+                CTaa=gsub('.*_','',CTaa)) %>%
+  dplyr::group_by(pair,stage,CTaa) %>%
+  dplyr::summarise(n=n(),ntot=mean(ntot)) %>%
+  dplyr::mutate(frac=n/ntot,
+                stage='in-silico sorted') %>%
+  dplyr::ungroup()  %>%
+  dplyr::select(CTaa,stage,frac) 
+
+tmp <- rbind(tmp_all,
+             tmp_bulk,
+             tmp_pred) %>%
+  dplyr::mutate(persisting=CTaa %in% gsub('.*_','',persisting_cts[[pair]]))
+
+inset <- tmp %>% 
+  spread(stage,frac) %>%
+  dplyr::select(-c(`day +90`,`day +180`)) %>%
+  gather(stage,freq,-c(CTaa,persisting)) %>% 
+  dplyr::filter(persisting) %>%
+  dplyr::group_by(stage) %>% 
+  dplyr::summarise(freq=sum(freq,na.rm=TRUE)) %>%
+  dplyr::mutate(stage=factor(stage,levels=c('pre G-CSF','post G-CSF',
+                                            'in-silico sorted','in-vitro sorted'))) %>%
+  ggplot(aes(x=stage,y=100*freq)) +
+  geom_col()  +
+  theme_classic(base_size=8) +
+  theme(axis.text.x=element_text(angle=45,hjust=1,vjust=1)) +
+  labs(x='',y='% persisting')
+
+tmp %>%
+  dplyr::filter(CTaa %in% c(good_beta,sc_beta)) %>%
+  dplyr::mutate(stage=factor(stage,levels=c('pre G-CSF','post G-CSF','in-silico sorted','in-vitro sorted','day +90','day +180'))) %>%
+  ggplot(aes(x = stage, fill = CTaa, group = CTaa,
+             stratum = CTaa, alluvium = CTaa,
+             y = frac, label = CTaa)) +
+  theme_classic() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(angle=45,hjust=1,vjust=1),
+        legend.position='none',
+        legend.text=element_text(size=6),
+        strip.background = element_rect(color = "black", fill=NA, size = 0),
+        legend.key.size=unit(3,'mm')) +
+  annotation_custom(ggplotGrob(inset),
+                    xmin=.5,
+                    xmax=2.25,
+                    ymin=.4,
+                    ymax=.99) +
+  geom_stratum(size=.1) +
+  geom_flow(stat = "alluvium") +
+  scale_fill_manual(values=ct_colors_16) +
+  labs(y='fraction cells',fill='') + 
+  coord_cartesian(clip='off')
+```
+
+```{r Fig_S5B,fig.width=3.5,fig.height=2.5}
+ggplot(tmp %>% spread(stage,frac), 
+       aes(x=`post G-CSF`,y=`in-vitro sorted`, color=CTaa)) +
+  geom_point(aes(shape=persisting)) +
+  #geom_text_repel(aes(label=CTaa),size=2,segment.alpha=.5,segment.size=.25) +
+  theme_classic() +
+  scale_x_log10() + 
+  scale_y_log10() +
+  scale_color_manual(values=ct_colors_16) +
+  scale_shape_manual(values=c(4,19),labels=c('other','persisting')) +
+  guides(color=FALSE) +
+  labs(x='frequency post G-CSF',y='frequency in-vitro sorted',shape='') +
+  theme(legend.position=c(.8,.2),
+        legend.key.size=unit(3,'mm'))
+```
+
+```{r sessionInfo}
+sessionInfo()
+```
+

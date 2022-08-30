@@ -1,0 +1,244 @@
+---
+title: "data processing for Obermayer et al."
+output: 
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE, cache.lazy=FALSE, message=FALSE, warning=FALSE)
+library(sctransform)
+library(Seurat)
+library(SeuratDisk)
+library(ggplot2)
+library(cowplot)
+library(ggrepel)
+library(dplyr)
+library(scRepertoire)
+library(tidyr)
+library(DESeq2)
+options(future.globals.maxSize = 10 * 1024 * 1024^2)
+```
+
+we follow the [Seurat vignette](https://satijalab.org/seurat/v4.0/reference_mapping.html) and use their PBMC data as reference
+
+```{r get_reference, fig.width=6,fig.height=5}
+reference <- LoadH5Seurat(file.path('..','data','seurat','pbmc_multimodal.h5seurat'))
+```
+
+get marker genes from this reference
+
+```{r get_reference_markers}
+Idents(reference) <- 'celltype.l2'
+level2.markers.RNA <- FindAllMarkers(reference,assay='SCT', logfc.threshold=1, min.pct=.25,only.pos=TRUE)
+write.csv(level2.markers.RNA, file.path('..','data','seurat','level2_markers_RNA.csv'))
+```
+
+load PBMC data and take all cells with less than 10% mitochondrial RNA and between 250 and 5000 genes
+
+- D36prePBMC
+- D36postPBMC
+- R36d90PBMC
+- D26prePBMC
+- D26postPBMC
+- R26d90PBMC
+- R26d180PBMC
+- D10prePBMC
+- D10postPBMC
+- R10d180PBMC
+- D16prePBMC
+- D16postPBMC
+- R16d90PBMC
+- R16d180PBMC
+- D29postPBMC
+- R29d90PBMC
+- R29d180PBMC
+- D31postR24d30PBMC (only D31post)
+- R31d90R31d180PBMC
+
+```{r get_data}
+libraries <- c("D36prePBMC","D36postPBMC","R36d90PBMC",
+               "D26prePBMC","D26postPBMC","R26d90PBMC","R26d180PBMC",
+               "D10prePBMC","D10postPBMC","R10d180PBMC",
+               "D16prePBMC","D16postPBMC","R16d90PBMC","R16d180PBMC",
+               "D29postPBMC","R29d90PBMC","R29d180PBMC",
+               "D31postR24d30PBMC","R31d90R31d180PBMC")
+
+pbmc <- list()
+for (lib in libraries) {
+  dge <- Read10X_h5(file.path('..','data','cellranger',paste0(lib,'_filtered_counts.h5')))
+  sobj <- CreateSeuratObject(counts = dge[['Gene Expression']], project=lib)
+  sobj[['pct.mito']] <- PercentageFeatureSet(sobj, pattern='^MT-')
+  sobj <- subset(sobj, (pct.mito < 10) & (nFeature_RNA <= 5000) & (nFeature_RNA >= 250))
+  cells <- Cells(sobj)
+  hts <- grepl('Hashtag[0-9]',row.names(dge[['Antibody Capture']]))
+  sobj[["ADT"]] <- CreateAssayObject(counts = dge[['Antibody Capture']][!hts,cells,drop=FALSE])
+  sobj <- NormalizeData(sobj, normalization.method='CLR', assay='ADT', verbose=FALSE, margin=2)
+  if (lib=='D31postR24d30PBMC') {
+    hts <- c('Hashtag3','Hashtag5')
+    sobj_HTO <- CreateSeuratObject(counts = dge[['Antibody Capture']][hts,cells],drop=FALSE,assay='HTO')
+    sobj_HTO <- NormalizeData(sobj_HTO, normalization.method='CLR', assay='HTO', verbose=FALSE)
+    sobj_HTO <- HTODemux(sobj_HTO, assay='HTO', verbose=FALSE)
+    vireo <- read.table(file.path('..','data','vireo',paste0(lib,'_donor_ids.tsv')),
+                        header=1,row.names=1,as.is=TRUE)
+    sobj_HTO <- AddMetaData(sobj_HTO, vireo)
+    pbmc[['D31postPBMC']] <- subset(sobj, cells=Cells(sobj_HTO)[(sobj_HTO$donor_id=='donor0') & (sobj_HTO$hash.ID %in% c('Hashtag3','Negative'))])
+  } else if (lib=='R31d90R31d180PBMC') {
+    hts <- c('Hashtag3','Hashtag5')
+    sobj_HTO <- CreateSeuratObject(counts = dge[['Antibody Capture']][hts,cells],drop=FALSE,assay='HTO')
+    sobj_HTO <- NormalizeData(sobj_HTO, normalization.method='CLR', assay='HTO', verbose=FALSE)
+    sobj_HTO <- HTODemux(sobj_HTO, assay='HTO', verbose=FALSE)
+    pbmc[['R31d90PBMC']] <- subset(sobj, cells=Cells(sobj_HTO)[sobj_HTO$hash.ID=='Hashtag3'])
+    pbmc[['R31d180PBMC']] <- subset(sobj, cells=Cells(sobj_HTO)[sobj_HTO$hash.ID=='Hashtag5'])
+  } else {
+    pbmc[[lib]] <- sobj
+  }
+}
+```
+
+get some QC metrics
+
+```{r QC,fig.width=10,fig.height=5}
+md <- do.call(rbind, lapply(names(pbmc), function(x) pbmc[[x]]@meta.data[,c('nCount_RNA','nFeature_RNA','pct.mito')] %>%
+                              dplyr::mutate(orig.ident=x))) %>%
+  dplyr::group_by(orig.ident) %>%
+  dplyr::mutate(orig.ident=paste0(orig.ident,' (n=',n(),')')) %>%
+  gather(metric,value,-orig.ident)
+
+ggplot(md,aes(x=orig.ident,y=value,fill=orig.ident)) + 
+  geom_violin(scale='width') +
+  facet_wrap(~metric,scales='free_y') + 
+  theme_classic() + 
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=.5),
+        legend.position='none') + 
+  labs(x='',y='')
+```
+
+project our cells onto this reference embedding using RNA data; predict cell type labels for the level 1, level 2 and level 3 clustering of the reference
+
+```{r project}
+for (sample in names(pbmc)) {
+  sobj <- pbmc[[sample]]
+  capture.output(sobj <- SCTransform(sobj, verbose = FALSE),file='/dev/null')
+  anchors <- FindTransferAnchors(
+    reference = reference,
+    query = sobj,
+    normalization.method = "SCT",
+    reference.reduction = "spca",
+    dims = 1:50,
+    verbose=FALSE)
+  pbmc[[sample]] <- MapQuery(
+    anchorset = anchors,
+    query = sobj,
+    reference = reference,
+    refdata = list(
+      celltype.l1 = "celltype.l1",
+      celltype.l2 = "celltype.l2",
+      celltype.l3 = "celltype.l3",
+      predicted_ADT = "ADT"
+    ),
+    reference.reduction = "spca", 
+    reduction.model = "wnn.umap",
+    verbose=FALSE)
+}
+```
+
+identify and remove putative doublets (shown in pink), and cells with prediction score < .75
+
+```{r doublets,fig.width=10,fig.height=12}
+source('my_doubletFinder.R')
+pbmc <- lapply(pbmc, function(sobj) {
+  DefaultAssay(sobj) <- 'RNA'
+  Idents(sobj) <- 'predicted.celltype.l1'
+  homotypic.prop <- modelHomotypic(Idents(sobj))
+  nExp_poi <- round(0.05*nrow(sobj@meta.data)) 
+  nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+  tmp <- my_doubletFinder(sobj, PCs = 1:10, pN = 0.25, pK = 0.09, nExp = nExp_poi, reuse.pANN = FALSE)
+  tmp <- my_doubletFinder(tmp, PCs = 1:10, pN = 0.25, pK = 0.09, nExp = nExp_poi.adj, reuse.pANN = "pANN")
+  AddMetaData(sobj, tmp@meta.data[,'DF.classifications',drop=FALSE])
+})
+
+do.call(rbind,lapply(pbmc, function(sobj) table(sobj$DF.classifications))) %>%
+  DT::datatable()
+
+plots <- lapply(names(pbmc), function(sample)
+  DimPlot(pbmc[[sample]], group.by='DF.classifications',
+          cols=c('Singlet'='gray',
+                 'Doublet'='deeppink')) +
+    theme_void() + 
+    labs(title=sample) + 
+    theme(legend.position='none'))
+
+plot_grid(plotlist=plots,ncol=5,align='vh')
+
+pbmc.sub <- lapply(pbmc, function(x) subset(x, subset=(DF.classifications=='Singlet') & (predicted.celltype.l1.score >= .75)))
+```
+
+merge all datasets
+
+```{r merge}
+pbmc.all <- merge(pbmc.sub[[1]],pbmc.sub[2:length(pbmc.sub)],
+                  add.cell.ids=names(pbmc.sub))
+
+umap <- do.call(rbind, lapply(seq(1,length(pbmc.sub)), function(i) {
+  emb <- Embeddings(pbmc.sub[[i]], reduction='ref.umap')
+  row.names(emb) <- paste0(names(pbmc.sub)[[i]],'_',row.names(emb))
+  emb })
+)
+pbmc.all[["umap"]] <- CreateDimReducObject(embeddings = umap, key = "UMAP_", assay = DefaultAssay(pbmc.all))
+pbmc.all$sample <- gsub('_.*','',Cells(pbmc.all))
+pbmc.all$donor <- gsub('[prepostd]*[0-9]*PBMC','',pbmc.all$sample)
+pbmc.all$donor_type <- ifelse(grepl('^D',pbmc.all$sample),'donor','recipient')
+```
+
+add clonotype information
+
+```{r add clonotypes}
+bcs <- sapply(unique(pbmc.all$sample), function(x) gsub('.*_([ACGT]*-[0-9]*)','\\1',Cells(pbmc.all)[pbmc.all$sample==x]))
+  
+tcr_list <- list()
+for (lib in unique(pbmc.all$orig.ident)) {
+  infile <- file.path('..','data','cellranger',paste0(lib,'_filtered_contigs.csv'))
+  if (file.exists(infile)) {
+    tcr <- read.csv(infile,
+                    stringsAsFactors=FALSE) %>%
+      dplyr::mutate(is_cell=is_cell=='true',
+                    high_confidence=high_confidence=='true',
+                    full_length=full_length=='true',
+                    productive=productive=='true')
+    for (sample in unique(pbmc.all$sample[pbmc.all$orig.ident==lib])) {
+      tcr_list[[sample]] <- tcr %>% dplyr::filter(barcode %in% bcs[[sample]])
+    }
+  }
+}
+  
+tcr_combined <- sapply(which(sapply(tcr_list, function(x) !is.null(x))),
+                       function(i) combineTCR(tcr_list[[i]],
+                                              samples=c(names(tcr_list)[[i]]),
+                                              ID=c(names(tcr_list)[[i]]),
+                                              cells='T-AB',
+                                              filterMulti=TRUE))
+names(tcr_combined) <- names(tcr_list)[sapply(tcr_list, function(x) !is.null(x))]
+  
+saveRDS(tcr_combined,file.path('..','data','seurat','tcr_combined_all.rds'))
+```
+
+add TCR information to Seurat objects
+
+```{r add_clonotypes,fig.width=12,fig.height=5}
+pbmc.all <- RenameCells(pbmc.all, add.cell.id <- pbmc.all$sample)
+
+tmp <- lapply(tcr_combined, function(x) x[x$barcode %in% Cells(pbmc.all),])
+pbmc.all <- combineExpression(tmp, pbmc.all,
+                              cloneCall="aa")
+```
+
+```{r save}
+saveRDS(pbmc.all,file.path('..','data','seurat','pbmc_all.rds'))
+```
+
+```{r sessionInfo}
+sessionInfo()
+```
+

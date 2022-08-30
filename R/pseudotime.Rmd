@@ -1,0 +1,89 @@
+---
+title: "pseudotime calculation for Obermayer et al."
+output: 
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE, cache.lazy=FALSE, message=FALSE, warning=FALSE, dev=c('png','pdf'))
+library(Seurat)
+library(SeuratDisk)
+library(dplyr)
+library(tidyr)
+library(cluster)
+library(plyr)
+options(future.globals.maxSize = 10 * 1024 * 1024^2)
+```
+
+get data
+
+```{r get_data}
+pbmc.all <- readRDS(file.path('..','data','seurat','pbmc_all.rds'))
+
+pbmc.all$sample <- gsub('PBMC$','',pbmc.all$sample)
+pbmc.all$celltype <- ifelse(pbmc.all$predicted.celltype.l1 %in% c('B','CD4 T','CD8 T'),
+                            pbmc.all$predicted.celltype.l2,
+                            pbmc.all$predicted.celltype.l1)
+pbmc.all$stage <- factor(gsub('[DR][0-9]*([preostd0-9]*)','\\1',pbmc.all$sample),levels=c('pre','post','d90','d180'))
+```
+
+get all CD8 cells in the donors and re-calculate UMAP
+
+```{r CD8}
+CD8 <- subset(pbmc.all, subset=(predicted.celltype.l1=='CD8 T') & (donor %in% c('D10','D16','D26','D29')))
+DefaultAssay(CD8) <- 'SCT'
+CD8.list <- SplitObject(CD8, split.by = "orig.ident")
+CD8.list <- lapply(CD8.list, SCTransform, verbose=FALSE)
+features <- SelectIntegrationFeatures(object.list = CD8.list, nfeatures = 2000, verbose=FALSE)
+features <- features[!grepl('^TR[AB][VDJ][0-9]|^IG[LHK][VDJ][0-9]|MT-',features)]
+
+CD8.list <- PrepSCTIntegration(object.list = CD8.list, anchor.features = features, verbose=FALSE)
+anchors <- FindIntegrationAnchors(object.list = CD8.list, normalization.method = "SCT",
+                                  anchor.features = features, verbose=FALSE)
+CD8 <- IntegrateData(anchorset = anchors, normalization.method = "SCT", verbose=FALSE, k.weight=45) %>%
+  ScaleData(verbose=FALSE) %>%
+  RunPCA(verbose = FALSE) %>%
+  RunUMAP(reduction = "pca", dims = 1:20, verbose=FALSE) %>%
+  FindNeighbors(dims = 1:20, verbose = FALSE) %>%
+  FindClusters(verbose = FALSE)
+```
+
+```{r CD8_umap}
+DimPlot(CD8, label = TRUE) + NoLegend()
+DimPlot(CD8, group.by='orig.ident',label=TRUE) + NoLegend()
+```
+
+run monocle3
+
+```{r CD8_monocle}
+library(monocle3)
+library(SeuratWrappers)
+
+DefaultAssay(CD8) <- 'integrated'
+cds <- as.cell_data_set(CD8)
+
+cds <- cluster_cells(cds = cds, reduction_method = "UMAP")
+cds <- learn_graph(cds, use_partition = TRUE)
+cds <- order_cells(cds, reduction_method = "UMAP",
+                   root_cells = Cells(CD8)[(CD8$predicted.celltype.l2=='CD8 Naive') & (CD8@reductions$umap@cell.embeddings[,'UMAP_1'] < -8)])
+
+plot_cells(cds = cds, color_cells_by = "pseudotime", show_trajectory_graph = TRUE)
+df <- data.frame(monocle_pseudotime=cds@principal_graph_aux@listData$UMAP$pseudotime,
+                 row.names=names(cds@principal_graph_aux@listData$UMAP$pseudotime))
+df[!is.finite(df$monocle_pseudotime),'monocle_pseudotime'] <- NA
+CD8 <- AddMetaData(CD8, df)
+FeaturePlot(CD8,'monocle_pseudotime',order=TRUE)
+```
+
+```{r save}
+saveRDS(CD8, file.path('..','data','seurat','CD8_pseudotime.rds'))
+```
+
+```{r sessionInfo}
+sessionInfo()
+```
+
