@@ -18,16 +18,14 @@ data
 │   ├── D10prePBMC_filtered_contigs.csv 
 │   ├── D10prePBMC_filtered_counts.h5 
 │   ├── ...
-├── DE
 ├── scDiffCom
 ├── seurat
 │   └── pbmc_multimodal.h5seurat
-├── VDJdb
-│   ├── input
-│   ├── TRA
-│   └── TRB
-└── vireo
-    └── D31postR24d30PBMC_donor_ids.tsv
+├── tables
+└── VDJdb
+    ├── input
+    ├── TRA
+    └── TRB
 ```
 
 ## Seurat processing

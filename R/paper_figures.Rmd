@@ -69,6 +69,13 @@ names(persisting_cts) <- names(md)
 n_persisting_cts <- length(Reduce(union,persisting_cts))
 ```
 
+print some stats
+
+- `r dim(pbmc.all)[2]` cells in total
+- `r sum(grepl('T',pbmc.all$predicted.celltype.l1))` T-cells
+- `r median(table(grepl('T',pbmc.all$predicted.celltype.l1),pbmc.all$sample))` T-cells per sample
+- `r median(table(grepl('T',pbmc.all$predicted.celltype.l1),pbmc.all$stage)[2,])` T-cells per time point
+
 set color scheme
 
 ```{r colors}
@@ -103,17 +110,16 @@ stage_colors <- c('pre G-CSF'='orange1',
 dtype_colors <- c('D'='orange2',
                   'R'='firebrick')
 
-pair_shapes_1 <- c('p10'=16,'p16'=15,'p26'=18,'p29'=17,'p31'=12,'p36'=13)
+pair_shapes_1 <- c('p10'=16,'p16'=15,'p26'=18,'p29'=17,'p36'=12)
 pair_shapes_2 <- c('p10'=21,'p16'=22,'p26'=23,'p29'=24,'p36'=25)
 
 pair_colors <- c("p10"="#E41A1C",
                  "p16"="#377EB8",
                  "p26"="#4DAF4A",
                  "p29"="#984EA3",
-                 "p31"="#FF7F00",
-                 "p36"="#FFFF33")
+                 "p36"="#FF7F00")
 
-pair_map <- c('p10'='pair A','p16'='pair B','p26'='pair C','p29'='pair D','p31'='pair E','p36'='pair F')
+pair_map <- c('p10'='pair A','p16'='pair B','p26'='pair C','p29'='pair D','p36'='pair E')
 
 cloneType_colors <- c('hyperexpanded'='plum4',
                       'large'='plum3',
@@ -329,8 +335,8 @@ md_here %>%
 
 cloneType in umap
 
-```{r Fig_S2A,fig.width=5.5,fig.height=5}
-DimPlot(pbmc.all, group.by='cloneType', split.by='stage', ncol=2) +
+```{r Fig_S2A,fig.width=8.5,fig.height=2.5}
+DimPlot(pbmc.all, group.by='cloneType', split.by='stage', ncol=4) +
   geom_segment(data=anno,
                aes(x=x,y=y,xend=xend,yend=yend),
                arrow=arrow(length=unit(1.5,'mm')),colour='black',size=.25,inherit.aes=FALSE) + 
@@ -361,7 +367,7 @@ for (sample in unique(pbmc.all$sample)) {
   expr[[paste0(sample,'_all')]] <- rowSums(pbmc.all@assays$RNA@counts[genes,cells])
 
   pair <- gsub('[DR]([0-9]*).*','\\1',sample)
-  if (pair %in% c('31','36')) next
+  if (pair %in% c('36')) next
 
   cells <- Cells(pbmc.all)[(pbmc.all$sample==sample) & 
                              (pbmc.all$CTaa %in% persisting_cts[[pair]]) & 
@@ -393,7 +399,7 @@ counts <- do.call(cbind,expr)
 now we run differential gene expression on the data, with a number of comparisons:
 
 - D_vs_R_*: donors vs. recipients in all cell types separately (excluding rare cell types that appear in less than 10 samples)
-- persisting_vs_other: persisting vs other CD8 TEM cells, separately for donors and recipients and excluding pair 31 and 36
+- persisting_vs_other: persisting vs other CD8 TEM cells, separately for donors and recipients and excluding pair 36
 
 ```{r pseudobulk_DE}
 res <- list()
@@ -416,7 +422,7 @@ for (celltype in setdiff(names(tmp[tmp >= 10]),c('persisting','other'))) {
   })
 }
 
-take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('31','36')) & (colData$donor_type=='D')
+take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('36')) & (colData$donor_type=='D')
 dds <- DESeqDataSetFromMatrix(countData=counts[take_row,take_col],
                               colData=colData[take_col,,drop=FALSE],
                               design=~pair+stage+celltype) %>%
@@ -429,7 +435,7 @@ res[['persisting_vs_other_D']] <- lfcShrink(dds,
   tibble::rownames_to_column('gene_name') %>%
   dplyr::mutate(contrast='persisting_vs_other_D')
 
-take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('31','36')) & (colData$donor_type=='R')
+take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('36')) & (colData$donor_type=='R')
 dds <- DESeqDataSetFromMatrix(countData=counts[take_row,take_col],
                               colData=colData[take_col,,drop=FALSE],
                               design=~pair+stage+celltype) %>%
@@ -444,13 +450,13 @@ res[['persisting_vs_other_R']] <- lfcShrink(dds,
 
 
 pseudobulk <- do.call(rbind,res)
-write.csv(pseudobulk,file=file.path('..','data','DE','pseudobulk_DE.csv'))
+write.csv(pseudobulk,file=file.path('..','data','tables','pseudobulk_DE.csv'))
 ```
 
 load table of "DEGs" of differential genes (at adj. p-value < 0.01) 
 
 ```{r pseudobulk_table, cache=FALSE}
-pseudobulk <- read.csv(file.path('..','data','DE','pseudobulk_DE.csv'),row.names=1)
+pseudobulk <- read.csv(file.path('..','data','tables','pseudobulk_DE.csv'),row.names=1)
 diff_genes <- pseudobulk %>% 
   dplyr::filter(grepl('persisting_vs_other_[DR]|R_vs_D_CD8 TEM',contrast),padj < .01,abs(log2FoldChange) > .5) %>% 
   dplyr::pull(gene_name) %>%
@@ -460,6 +466,8 @@ persistence_genes <- pseudobulk %>%
   dplyr::pull(gene_name) %>%
   unique()
 ```
+
+we have `r length(diff_genes)` genes in the heatmap and PCA, `r length(persistence_genes)` of which are different between persistent and other CD8TEM
 
 run gene set enrichment analysis using `tmod` on these results, using Hallmark, Reactome, Kegg and Gene Ontology BP categories
 
@@ -494,14 +502,22 @@ write.csv(tmods %>%
             dplyr::mutate(dataset=gsub('\\..*','',tmp),
                           contrast=gsub('([^_]*_[vs_]*[^_]*_.*)_([updown]*)$','\\1',dataset),
                           direction=gsub('([^_]*_[vs_]*[^_]*_.*)_([updown]*)$','\\2',dataset)),
-          file=file.path('..','data','DE','pseudobulk_tmod.csv'))
+          file=file.path('..','data','tables','pseudobulk_tmod.csv'))
 ```
 
-here's a table "GSEA" of the `tmod` results to excel file
+here's a table "GSEA" of the `tmod` results
 
 ```{r tmod_table}
 msig <- tmodImportMSigDB(file.path('..','msigdb_v7.2.xml'))
-tmods <- read.csv(file.path('..','data','DE','pseudobulk_tmod.csv'),row.names=1,stringsAsFactors=FALSE)
+tmods <- read.csv(file.path('..','data','tables','pseudobulk_tmod.csv'),row.names=1,stringsAsFactors=FALSE)
+```
+
+```{r Table_S2_S3}
+library(openxlsx)
+write.xlsx(pseudobulk %>% dplyr::filter(padj < .05),
+           '../data/tables/Table_S2.xlsx', sheetName='Table S2', row.names=FALSE)
+write.xlsx(tmods %>% dplyr::select(-c(tmp,dataset)),
+           '../data/tables/Table_S3.xlsx', sheetName='Table S3', row.names=FALSE)
 ```
 
 here's a summary plot of differential genes in the "R_vs_D" comparisons belonging to any of the handpicked terms, but excluding ribosomal proteins
@@ -613,14 +629,21 @@ CCI <- GetTableCCI(scdiffcom, "detected", simplified=TRUE)
 ORA <- GetTableORA(scdiffcom, categories = "all", simplified = TRUE)
 ```
 
+```{r Table_S4}
+library(openxlsx)
+write.xlsx(ORA$LRI,
+           '../data/tables/Table_S4.xlsx', sheetName='Table S4', row.names=FALSE)
+```
+
 plot top enriched ligand-receptor interactions that are up-regulated between donors and recipients
 
 ```{r Fig_2D,fig.width=5.5,fig.height=3.5}
-PlotORA(scdiffcom,category='LRI') +
+PlotORA(scdiffcom,category='LRI',max_terms_show=25) +
   theme_classic() +
   coord_cartesian(clip='off') +
   theme(legend.key.size=unit(3,'mm'),
         legend.spacing=unit(0,'mm'),
+        axis.text=element_text(size=8),
         legend.title=element_text(size=10),
         legend.box='vertical',
         legend.position='right') +
@@ -635,8 +658,8 @@ library(RColorBrewer)
 
 top_LRI <- ORA$LRI %>%
   dplyr::filter(VALUE %in% c('CD72:CD5',
-                             #'S100A8:ITGB2',
-                             #'S100A9:ITGB2',
+                             'CD72:SEMA4D',
+                             'HLA-DRB1:LAG3',
                              'MIF:CD74',
                              'SIRPG:CD47'))
 
@@ -778,13 +801,12 @@ do.call(rbind,md) %>%
   coord_cartesian(clip='off')
 ```
 
-plot phenotype distribution: persisting cells are mostly CD8 TEM (leave out p31)
+plot phenotype distribution: persisting cells are mostly CD8 TEM 
 
 ```{r Fig_3C,fig.width=3.95,fig.height=3.}
 do.call(rbind,md) %>%
   dplyr::mutate(pair=gsub('^[DR]','p',donor)) %>%
-  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),
-                pair!='p31') %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T')) %>%
   dplyr::group_by(pair,stage) %>%
   dplyr::mutate(ntot=n()) %>%
   dplyr::mutate(persistence=factor(ifelse(CTaa %in% Reduce(union,persisting_cts),'persisting','other'),
@@ -816,7 +838,7 @@ do.call(rbind,md) %>%
 
 plot change in frequency for top10 clonotypes in donors or recipients
 
-```{r Fig_3D_S3D, fig.width=7,fig.height=2.5}
+```{r Fig_3D_S3D, fig.width=5.5,fig.height=2.5}
 top10 <- do.call(rbind,md) %>%
   dplyr::mutate(pair=gsub('^[DR]','',donor)) %>%
   dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),!is.na(CTaa),!grepl('NA',CTaa)) %>%
@@ -877,19 +899,17 @@ for (dt in c('donor','recipient')) {
   
 clonal overlap (morisita) for CD4 + CD8 T cells
 
-```{r Fig_S3A, fig.width=4.5,fig.height=4.5}
+```{r Fig_S3A, fig.width=4,fig.height=4}
 breaks <- c('D10prePBMC','D10postPBMC','R10d180PBMC',
             'D16prePBMC','D16postPBMC','R16d90PBMC','R16d180PBMC',
             'D26prePBMC','D26postPBMC','R26d90PBMC','R26d180PBMC',
             'D29postPBMC','R29d90PBMC','R29d180PBMC',
-            'D31postPBMC','R31d90PBMC','R31d180PBMC',
             'D36prePBMC','D36postPBMC','R36d90PBMC')
 labels <- gsub('[DR]10','A_',
                gsub('[DR]16','B_',
                     gsub('[DR]26','C_',
                          gsub('[DR]29','D_',
-                              gsub('[DR]31','E_',
-                                   gsub('[DR]36','F_',gsub('PBMC','',breaks)))))))
+                              gsub('[DR]36','E_',gsub('PBMC','',breaks))))))
 
 df <- as.matrix(clonalOverlap(tcr_comb[breaks], cloneCall = "gene+nt", method = "morisita", exportTable=TRUE) %>%
                   dplyr::select(-names))
@@ -919,7 +939,7 @@ check phenotype switching
 library(forcats)
 pl <- do.call(rbind,md) %>%
   dplyr::mutate(pair=gsub('^[DR]','p',donor)) %>%
-  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),CTaa %in% Reduce(union,persisting_cts),pair!='p31') %>%
+  dplyr::filter(predicted.celltype.l1 %in% c('CD4 T','CD8 T'),CTaa %in% Reduce(union,persisting_cts)) %>%
   dplyr::group_by(CTaa,celltype) %>%
   dplyr::summarise(n=n()) %>%
   dplyr::group_by(CTaa) %>%
@@ -965,7 +985,6 @@ samples <- c('D26pre','D26post','R26d90','R26d180',
              'D10pre','D10post','R10d180',
              'D16pre','D16post','R16d90','R16d180',
              'D29post','R29d90','R29d180',
-             'D31post','R31d90','R31d180',
              'D36pre','D36post','R36d90')
 
 vdjdb_match <- list()
@@ -1019,7 +1038,7 @@ run a PCA on the CD8 TEM cell data using all genes that are different between do
 
 ```{r Fig_4A,fig.width=4,fig.height=3.}
 take_row <- rowSums(counts) > 0
-take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('31','36'))
+take_col <- (colSums(counts) > 0) & (colData$celltype %in% c('persisting','other')) & !(colData$pair %in% c('36'))
 dds <- DESeqDataSetFromMatrix(countData=counts[take_row,take_col],
                               colData=colData[take_col,,drop=FALSE],
                               design=~pair+stage+celltype)
@@ -1111,6 +1130,41 @@ Heatmap(mat[diff_genes,],
         name='z-score') + gene_va
 ```
 
+<!-- ```{r avg_timecourse,fig.width=4,fig.height=3} -->
+<!-- mat %>%  -->
+<!--   as.data.frame() %>% -->
+<!--   dplyr::mutate(clust=paste0('cluster ',clust)) %>% -->
+<!--   dplyr::group_by(clust) %>% -->
+<!--   dplyr::summarise_if(is.numeric,mean) %>% -->
+<!--   gather(sample,expression,-clust) %>% -->
+<!--   dplyr::mutate(persisting=gsub('.*_(.*)','\\1',sample), -->
+<!--                 stage=factor(gsub('[DR][0-9]*([^_]*)_.*','\\1',sample), -->
+<!--                              levels=c('pre','post','d90','d180')), -->
+<!--                 pair=gsub('[DR]([0-9]*).*','p\\1',sample), -->
+<!--                 stage=revalue(stage,stage_map)) %>% -->
+<!--   ggplot(aes(x=stage,y=expression)) +  -->
+<!--   geom_point(aes(shape=pair,fill=persisting),stroke=0,size=2) +  -->
+<!--   stat_summary(aes(y = expression,color=persisting,group=persisting),  -->
+<!--                fun.y=mean, geom="line", na.rm=TRUE, size=1) + -->
+<!--   facet_wrap(~clust,ncol=3) +  -->
+<!--   scale_color_manual(values=persistence_colors) + -->
+<!--   scale_fill_manual(values=persistence_colors) + -->
+<!--   scale_shape_manual(values=pair_shapes_2, -->
+<!--                      labels=pair_map, -->
+<!--                      limits=force) + -->
+<!--   theme_classic() + -->
+<!--   theme(legend.key.size=unit(3.5,'mm'), -->
+<!--         legend.position='right', -->
+<!--         strip.background=element_blank(), -->
+<!--         legend.title=element_blank(), -->
+<!--         legend.spacing=unit(0,'mm'), -->
+<!--         axis.text.x=element_text(angle=90,hjust=1,vjust=.5)) + -->
+<!--   labs(x='',y='mean z-score',shape='',fill='',color='') + -->
+<!--   guides(fill=guide_legend(override.aes=list(pch='',stroke=1,size=1)), -->
+<!--          color=guide_legend(override.aes=list(pch='',stroke=1,size=1)), -->
+<!--          shape=guide_legend(override.aes=list(fill='black',size=3,stroke=0)))  -->
+<!-- ``` -->
+
 show timecourse for all differential genes between persisting and other separately (adj. p-value < .01, abs log2 fold change > .5)
 
 ```{r Fig_S4,fig.width=10,fig.height=7}
@@ -1140,7 +1194,7 @@ mat[persistence_genes,] %>%
         legend.key.size=unit(3,'mm'),
         legend.spacing=unit(1,'mm'),
         axis.text.x=element_text(angle=45,hjust=1,vjust=1)) +
-  labs(x='',y='mean z-score',shape='',fill='',color='') +
+  labs(x='',y='z-score',shape='',fill='',color='') +
   guides(fill=guide_legend(override.aes=list(pch='',stroke=1,size=1)),
          color=guide_legend(override.aes=list(pch='',stroke=1,size=1)),
          shape=guide_legend(override.aes=list(fill='black',size=3,stroke=0))) 
@@ -1181,7 +1235,7 @@ mat[persistence_genes_2,] %>%
         legend.margin=ggplot2::margin(c(10,20,10,15)),
         #legend.position='right',
         axis.text.x=element_text(angle=90,hjust=1,vjust=.5)) +
-  labs(x='',y='mean z-score',shape='',fill='',color='') +
+  labs(x='',y='z-score',shape='',fill='',color='') +
   guides(fill=guide_legend(override.aes=list(pch='',stroke=1,size=1)),
          color=guide_legend(override.aes=list(pch='',stroke=1,size=1)),
          shape=guide_legend(override.aes=list(fill='black',size=3,stroke=0))) 
@@ -1230,7 +1284,7 @@ cytotoxicity_genes <- c('PRF1','IFNG','GNLY','NKG7','GZMB','GZMA','GZMH','KLRK1'
 
 tcells <- subset(pbmc.all, subset=(celltype %in% c('CD4 Naive','NK','CD4 TCM','CD8 TCM','CD8 Naive',
                                                   'CD8 TEM','CD4 TEM','other T','Treg','CD8 Proliferating',
-                                                  'CD4 Proliferating','CD4 CTL')) & !(pair %in% c('p31','p36')))
+                                                  'CD4 Proliferating','CD4 CTL')) & !(pair %in% c('p36')))
 tcells$persistence <- ifelse(tcells$CTaa %in% Reduce(union,persisting_cts),'persisting','other')
 DefaultAssay(tcells) <- 'SCT'
 tmp <- AddModuleScore(tcells, list('cytotoxicity'=cytotoxicity_genes))
@@ -1273,7 +1327,7 @@ rbind(tcells@meta.data %>%
 
 ```{r Fig_S5A,fig.width=5,fig.height=2.}
 pbmc.all$pair=gsub('([RD])([0-9]*)([prepostd]*[0-9]*)','p\\2',pbmc.all$sample)
-CD8TEM <- subset(pbmc.all, subset=(predicted.celltype.l2=='CD8 TEM') & !(pbmc.all$pair %in% c('p31','p36')))
+CD8TEM <- subset(pbmc.all, subset=(predicted.celltype.l2=='CD8 TEM') & !(pbmc.all$pair %in% c('p36')))
 CD8TEM$persistence <- ifelse(CD8TEM$CTaa %in% Reduce(union,persisting_cts),'persisting','other')
 DefaultAssay(CD8TEM) <- 'SCT'
 CD8TEM <- ScaleData(CD8TEM, verbose=FALSE)

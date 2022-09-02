@@ -54,16 +54,13 @@ load PBMC data and take all cells with less than 10% mitochondrial RNA and betwe
 - D29postPBMC
 - R29d90PBMC
 - R29d180PBMC
-- D31postR24d30PBMC (only D31post)
-- R31d90R31d180PBMC
 
 ```{r get_data}
 libraries <- c("D36prePBMC","D36postPBMC","R36d90PBMC",
                "D26prePBMC","D26postPBMC","R26d90PBMC","R26d180PBMC",
                "D10prePBMC","D10postPBMC","R10d180PBMC",
                "D16prePBMC","D16postPBMC","R16d90PBMC","R16d180PBMC",
-               "D29postPBMC","R29d90PBMC","R29d180PBMC",
-               "D31postR24d30PBMC","R31d90R31d180PBMC")
+               "D29postPBMC","R29d90PBMC","R29d180PBMC")
 
 pbmc <- list()
 for (lib in libraries) {
@@ -75,25 +72,7 @@ for (lib in libraries) {
   hts <- grepl('Hashtag[0-9]',row.names(dge[['Antibody Capture']]))
   sobj[["ADT"]] <- CreateAssayObject(counts = dge[['Antibody Capture']][!hts,cells,drop=FALSE])
   sobj <- NormalizeData(sobj, normalization.method='CLR', assay='ADT', verbose=FALSE, margin=2)
-  if (lib=='D31postR24d30PBMC') {
-    hts <- c('Hashtag3','Hashtag5')
-    sobj_HTO <- CreateSeuratObject(counts = dge[['Antibody Capture']][hts,cells],drop=FALSE,assay='HTO')
-    sobj_HTO <- NormalizeData(sobj_HTO, normalization.method='CLR', assay='HTO', verbose=FALSE)
-    sobj_HTO <- HTODemux(sobj_HTO, assay='HTO', verbose=FALSE)
-    vireo <- read.table(file.path('..','data','vireo',paste0(lib,'_donor_ids.tsv')),
-                        header=1,row.names=1,as.is=TRUE)
-    sobj_HTO <- AddMetaData(sobj_HTO, vireo)
-    pbmc[['D31postPBMC']] <- subset(sobj, cells=Cells(sobj_HTO)[(sobj_HTO$donor_id=='donor0') & (sobj_HTO$hash.ID %in% c('Hashtag3','Negative'))])
-  } else if (lib=='R31d90R31d180PBMC') {
-    hts <- c('Hashtag3','Hashtag5')
-    sobj_HTO <- CreateSeuratObject(counts = dge[['Antibody Capture']][hts,cells],drop=FALSE,assay='HTO')
-    sobj_HTO <- NormalizeData(sobj_HTO, normalization.method='CLR', assay='HTO', verbose=FALSE)
-    sobj_HTO <- HTODemux(sobj_HTO, assay='HTO', verbose=FALSE)
-    pbmc[['R31d90PBMC']] <- subset(sobj, cells=Cells(sobj_HTO)[sobj_HTO$hash.ID=='Hashtag3'])
-    pbmc[['R31d180PBMC']] <- subset(sobj, cells=Cells(sobj_HTO)[sobj_HTO$hash.ID=='Hashtag5'])
-  } else {
-    pbmc[[lib]] <- sobj
-  }
+  pbmc[[lib]] <- sobj
 }
 ```
 
