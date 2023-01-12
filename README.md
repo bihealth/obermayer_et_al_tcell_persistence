@@ -2,11 +2,11 @@
 
 ## data access
 
-- processed data is available upon request or (pending data privacy review) from NCBI GEO
+- processed data is available from NCBI GEO under accession [GSE222633](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE222633)
 - `pbmc_multimodal.h5seurat` is available [here](https://atlas.fredhutch.org/data/nygc/multimodal/pbmc_multimodal.h5seurat) 
 - MSigDB is available [here](http://www.gsea-msigdb.org/gsea/downloads.jsp)
 
-input data structure should looks like so:
+input data structure should looks like so (after stripping `GSE222633_` prefixes from files):
 
 ```
 data

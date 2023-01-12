@@ -155,7 +155,27 @@ DimPlot(pbmc.all, group.by='celltype', split.by='stage', pt.size=.01, ncol=2) +
   labs(title='') +
   scale_color_manual(values=celltype_colors,limits=force) +
   theme(legend.key.size=unit(3,'mm'),
-        legend.position='right')
+        plot.margin = unit(c(0, 1.8, 0, 0), "cm"),
+        legend.position=c(1.2,.3)) #'right')
+```
+
+show celltype proportions
+
+```{r Fig_1D,fig.width=1.25,fig.height=2.25}
+pbmc.all@meta.data %>% 
+  dplyr::group_by(stage,celltype) %>% 
+  dplyr::summarise(n=n()) %>% 
+  dplyr::group_by(stage) %>%
+  dplyr::mutate(frac=n/sum(n)) %>%
+  ggplot(aes(x=stage,y=frac,fill=celltype)) + 
+  geom_col() + 
+  scale_fill_manual(values=celltype_colors,limits=force) + 
+  guides(fill=guide_legend(ncol=2)) +
+  theme_classic() +
+  theme(legend.key.size=unit(3,'mm'),
+        legend.position='none',
+        axis.text.x=element_text(angle=90,hjust=1,vjust=.5)) +
+  labs(y='cell fraction',x='',fill='')
 ```
 
 some QC stats
@@ -221,7 +241,7 @@ pheatmap(ADT %>%
          name='scaled\nmedian\nexpression')
 ```
 
-show celltype proportions
+show celltype proportions again per sample
 
 ```{r Fig_S1C,fig.width=6,fig.height=3}
 pbmc.all@meta.data %>% 
@@ -890,7 +910,7 @@ for (dt in c('donor','recipient')) {
     scale_x_discrete(breaks=stage_map,labels=stage_map) +
     scale_color_manual(values=ct_colors_here) +
     #scale_shape_manual(values=c(4,16)) +
-    labs(y=paste0('fraction CD4/CD8 T cells'),fill='',title=paste0('top10 ',dt,' clones')) +
+    labs(y=paste0('fraction CD4/CD8 T cells'),fill='',title=paste0('top10 ',dt,' clonotypes')) +
     facet_grid(.~pair) +
     coord_cartesian(clip='off')
   print(pl)
@@ -1030,6 +1050,23 @@ annotated_md %>%
         axis.text.x=element_text(angle=45,hjust=1,vjust=1),
         axis.title.y=element_text(size=10)) +
   labs(y='fraction cells\nwith known\nCMV/EBV\nspecificity',x='',fill='',color='',shape='')
+```
+
+```{r Table_S5}
+library(openxlsx)
+write.xlsx(annotated_md %>%
+             dplyr::ungroup() %>%
+             dplyr::select(donor,stage,CTaa,anno) %>%
+             dplyr::mutate(pair=gsub('^[DR]','p',donor),
+                           persistence=ifelse(CTaa %in% Reduce(union,persisting_cts),'persisting','other')) %>%
+             dplyr::group_by(pair,stage,CTaa,persistence) %>%
+             dplyr::summarise(n=n(),
+                              specificity=gsub(',','_',paste0(unique(anno)))) %>%
+             dplyr::group_by(pair,stage) %>%
+             dplyr::mutate(fraction=n/sum(n),
+                           pair=pair_map[pair]) %>%
+             dplyr::filter(grepl('CMV|EBV',specificity)),
+           '../data/tables/Table_S5.xlsx', sheetName='Table S5', row.names=FALSE)
 ```
 
 # Figure 4 + S4
